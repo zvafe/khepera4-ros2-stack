@@ -161,10 +161,21 @@ if [ "$TARGET_MODE" = "native" ]; then
         xhost +local:root >/dev/null 2>&1 || xhost + >/dev/null 2>&1 || true
     fi
 
+    WSLG_MOUNTS=()
+    if [ -d "/mnt/wslg" ]; then
+        WSLG_MOUNTS+=(
+            "-v" "/mnt/wslg/.X11-unix:/tmp/.X11-unix"
+            "-v" "/mnt/wslg:/mnt/wslg"
+            "-e" "DISPLAY=:0"
+            "-e" "WAYLAND_DISPLAY=wayland-0"
+            "-e" "XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir"
+        )
+    fi
+
     if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
-        exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm khepera-native "${EXTRA_ARGS[@]}"
+        exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm "${WSLG_MOUNTS[@]}" khepera-native "${EXTRA_ARGS[@]}"
     else
-        exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm khepera-native bash
+        exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm "${WSLG_MOUNTS[@]}" khepera-native bash
     fi
 
 elif [ "$TARGET_MODE" = "web" ]; then
