@@ -389,8 +389,6 @@ git push -u origin main
 
 ---
 
-## 📄 License & Credits
+## 📄 Credits
 
-- **Authors:** Andrei Berteanu (Core Control & Modeling) & Research Collaborators.
-- **Academic Supervision:** Prof. Ioan Dumitrache, Department of Automatic Control and Systems Engineering, UPB.
-- **License:** Open-source under the Apache License 2.0.
+- **Author:** Berteanu Andrei (Core Control & Modeling) 
