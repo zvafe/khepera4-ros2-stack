@@ -82,8 +82,9 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/start-web.sh /start-web.sh
 RUN chmod +x /entrypoint.sh /start-web.sh
 
-# Setup environment sourcing in root bashrc
-RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
+# Setup workspace environment sourcing in root bashrc and path compatibility
+RUN mkdir -p /home/andy/Desktop && ln -sf /workspace /home/andy/Desktop/khepera4_ws && \
+    echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
     echo "if [ -f /workspace/install/setup.bash ]; then source /workspace/install/setup.bash; fi" >> /root/.bashrc && \
     echo "export GZ_SIM_RESOURCE_PATH=\"/workspace/install/khepera4_description/share:/workspace/src/khepera4_description/meshes:/workspace/src/khepera4_description/worlds:/workspace/src:\$GZ_SIM_RESOURCE_PATH\"" >> /root/.bashrc
 

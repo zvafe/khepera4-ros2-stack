@@ -6,6 +6,12 @@ if [ -f "/opt/ros/jazzy/setup.bash" ]; then
     source "/opt/ros/jazzy/setup.bash"
 fi
 
+# Ensure host workspace path compatibility for symlinked installs
+if [ ! -e "/home/andy/Desktop/khepera4_ws" ]; then
+    mkdir -p /home/andy/Desktop 2>/dev/null || true
+    ln -s /workspace /home/andy/Desktop/khepera4_ws 2>/dev/null || true
+fi
+
 # Source Khepera IV colcon workspace if built
 if [ -f "/workspace/install/setup.bash" ]; then
     source "/workspace/install/setup.bash"

@@ -30,6 +30,8 @@ services:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
     volumes:
       - ..:/workspace:rw
+      - ../docker/entrypoint.sh:/entrypoint.sh:ro
+      - ../docker/start-web.sh:/start-web.sh:ro
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev/dri:/dev/dri
       - /etc/localtime:/etc/localtime:ro
@@ -65,6 +67,8 @@ services:
       - "${KHEPERA_WEB_PORT:-6080}:80"
     volumes:
       - ..:/workspace:rw
+      - ../docker/entrypoint.sh:/entrypoint.sh:ro
+      - ../docker/start-web.sh:/start-web.sh:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint: ["/entrypoint.sh"]
     command: ["/start-web.sh"]
