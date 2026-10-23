@@ -1,0 +1,43 @@
+# ==============================================================================
+# BRT K4 Khepera IV ROS 2 Workspace - Git Ignore Rules
+# ==============================================================================
+
+# Colcon build artifacts & install targets
+build/
+install/
+log/
+COLCON_IGNORE
+AMENT_IGNORE
+
+# Python artifacts, bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+ENV/
+
+# Environment files
+.env
+!.env.example
+
+# IDE & Editor files
+.vscode/*
+!.vscode/devcontainer.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ROS 2 Bags, sensor logs & telemetry recordings
+*.db3
+*.mcap
+telemetry/
+*.csv
+*.bag

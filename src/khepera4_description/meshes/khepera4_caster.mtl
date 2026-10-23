@@ -1,0 +1,6 @@
+# Materials for Khepera IV Caster
+newmtl ChromeBall
+Ka 0.50 0.50 0.50
+Kd 0.85 0.85 0.88
+Ks 0.90 0.90 0.90
+Ns 100.0

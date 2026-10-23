@@ -1,0 +1,60 @@
+# Materials for Khepera IV
+newmtl Base
+Ka 0.05 0.20 0.50
+Kd 0.08 0.35 0.82
+Ks 0.20 0.20 0.30
+Ns 50.0
+
+newmtl Case
+Ka 0.60 0.60 0.60
+Kd 0.93 0.93 0.94
+Ks 0.30 0.30 0.30
+Ns 20.0
+
+newmtl DarkHole
+Ka 0.01 0.01 0.01
+Kd 0.02 0.02 0.02
+Ks 0.05 0.05 0.05
+Ns 10.0
+
+newmtl Ultrasonic
+Ka 0.10 0.10 0.10
+Kd 0.18 0.18 0.19
+Ks 0.50 0.50 0.50
+Ns 40.0
+
+newmtl Camera
+Ka 0.02 0.02 0.03
+Kd 0.04 0.04 0.06
+Ks 0.70 0.70 0.80
+Ns 80.0
+
+newmtl Metal
+Ka 0.40 0.40 0.40
+Kd 0.75 0.75 0.78
+Ks 0.80 0.80 0.80
+Ns 60.0
+
+newmtl DarkPlastic
+Ka 0.05 0.05 0.05
+Kd 0.10 0.10 0.10
+Ks 0.10 0.10 0.10
+Ns 10.0
+
+newmtl LedGreen
+Ka 0.00 0.40 0.00
+Kd 0.00 0.90 0.00
+Ks 0.20 0.90 0.20
+Ns 30.0
+
+newmtl LedRed
+Ka 0.40 0.00 0.00
+Kd 0.90 0.00 0.00
+Ks 0.90 0.20 0.20
+Ns 30.0
+
+newmtl LedBlue
+Ka 0.00 0.10 0.40
+Kd 0.00 0.20 0.90
+Ks 0.20 0.30 0.90
+Ns 30.0

@@ -1,0 +1,47 @@
+{
+  "name": "Khepera IV (BRT K4) - ROS 2 Jazzy & Gazebo Harmonic",
+  "build": {
+    "dockerfile": "../docker/Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "runArgs": [
+    "--net=host",
+    "--ipc=host",
+    "--privileged",
+    "-v", "/tmp/.X11-unix:/tmp/.X11-unix",
+    "-v", "/dev/dri:/dev/dri",
+    "-e", "DISPLAY=${localEnv:DISPLAY}"
+  ],
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "QT_X11_NO_MITSHM": "1",
+    "ROS_DISTRO": "jazzy",
+    "GZ_SIM_RESOURCE_PATH": "/workspace/install/khepera4_description/share:/workspace/src/khepera4_description/meshes:/workspace/src/khepera4_description/worlds:/workspace/src"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-iot.vscode-ros",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "redhat.vscode-xml",
+        "smilerobotics.urdf"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "ros.distro": "jazzy",
+        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "python.analysis.extraPaths": [
+          "/opt/ros/jazzy/lib/python3.12/site-packages",
+          "/workspace/install/khepera4_control/lib/python3.12/site-packages"
+        ]
+      }
+    }
+  },
+  "postCreateCommand": "bash -c 'source /opt/ros/jazzy/setup.bash && colcon build --symlink-install || true'",
+  "remoteUser": "root"
+}

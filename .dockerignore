@@ -1,0 +1,25 @@
+# Build, log and install artifacts
+build/
+install/
+log/
+
+# Version control and IDE metadata
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Environment configuration
+.env
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Simulation logs and datasets
+telemetry_data/
+*.csv
+*.png

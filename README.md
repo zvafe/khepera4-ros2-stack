@@ -1,0 +1,396 @@
+# BRT K4: Khepera IV ROS 2 Jazzy & Gazebo Harmonic Stack
+
+[![ROS 2](https://img.shields.io/badge/ROS_2-Jazzy_Jalisco-343434?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
+[![Gazebo](https://img.shields.io/badge/Gazebo-Harmonic_8.15-FF6F00?logo=gazebo&logoColor=white)](https://gazebosim.org/docs/harmonic)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04_LTS-E95420?logo=ubuntu&logoColor=white)](https://releases.ubuntu.com/24.04/)
+[![Repository](https://img.shields.io/badge/GitHub-zvafe%2Fkhepera4--ros2--stack-blue?logo=github)](https://github.com/zvafe/khepera4-ros2-stack)
+[![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
+
+An academic and industrial-grade cyber-physical simulation and control stack for the **K-Team Khepera IV** differential-drive mobile robot. Built natively on **Ubuntu 24.04 LTS (Noble Numbat)**, **ROS 2 Jazzy Jalisco**, and **Gazebo Harmonic (v8.15+)**.
+
+Project Codename: **BRT K4**  
+Official Repository: [`zvafe/khepera4-ros2-stack`](https://github.com/zvafe/khepera4-ros2-stack)  
+Academic Charter: *Bazele Sistemelor Automate (BSA)*, Faculty of Automatic Control and Computers, POLITEHNICA Bucharest.
+
+---
+
+## 📑 Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [System Architecture & Computation Graph](#system-architecture--computation-graph)
+3. [Multi-Team Integration & Modular Architecture](#multi-team-integration--modular-architecture)
+   - [1. Core Modeling & Closed-Loop Control (Andrei Berteanu)](#1-core-modeling--closed-loop-control-andrei-berteanu)
+   - [2. Robotic Arm Team](#2-robotic-arm-team)
+   - [3. Swarm Team](#3-swarm-team)
+   - [4. Neural Network / AI Team](#4-neural-network--ai-team)
+4. [Running the Simulation](#running-the-simulation)
+   - [Interactive Launcher (`./run.sh`)](#interactive-launcher-runsh)
+   - [Mode A: Native GUI (WSLg / GPU Pass-Through)](#mode-a-native-gui-wslg--gpu-pass-through)
+   - [Mode B: Web Browser (noVNC for Low-Spec / Academic PCs)](#mode-b-web-browser-novnc-for-low-spec--academic-pcs)
+   - [Native Host Execution (No Docker)](#native-host-execution-no-docker)
+   - [Interactive Educational Guide](#interactive-educational-guide)
+5. [Configuration via `.env` (Port Conflict Safeguards)](#configuration-via-env-port-conflict-safeguards)
+6. [Physical Robot Deployment (Offboard ROS 2 Bridge)](#physical-robot-deployment-offboard-ros-2-bridge)
+7. [Directory Structure](#directory-structure)
+8. [Git Workflow & Upstream Collaboration](#git-workflow--upstream-collaboration)
+
+---
+
+## 🔍 Executive Summary
+
+The **BRT K4** stack establishes a bridge between continuous-time automation control theory and modern cyber-physical robotics. It provides:
+- **First-Principles Kinematic & Dynamic Modeling:** Rigorous unicycle kinematics paired with DC motor electromechanical dynamics and Coulomb/viscous friction modeling.
+- **Hierarchical Closed-Loop Control:** Inner-loop motor regulation coupled to outer-loop non-linear posture tracking with Lyapunov stability criteria.
+- **High-Fidelity Virtual Prototyping:** Realistic Gazebo Harmonic simulation with exact physical dimensions ($r = 0.021\text{ m}, L = 0.1054\text{ m}, m = 0.540\text{ kg}$), passive low-friction casters ($\mu = 0.0001$), ground drive-wheel contact ($\mu = 1.0$), and calibrated sensors (CMOS camera, 6-DOF IMU, 8 IR sensors, 5 ultrasonic transceivers).
+- **Multi-Modal Execution:** Flexible deployment through native Linux desktops, Windows 11 WSLg GPU acceleration, or zero-install HTML5 web browser interfaces via noVNC.
+
+---
+
+## 🏛️ System Architecture & Computation Graph
+
+The simulation leverages bidirectional communication between ROS 2 Jazzy and Gazebo Harmonic managed via `ros_gz_bridge`:
+
+```
++---------------------------------------------------------------------------------------+
+|                                    ROS 2 COMPUTATION GRAPH                             |
+|                                                                                       |
+|   +--------------------------+       /cmd_vel       +-----------------------------+   |
+|   |  closed_loop_controller  | -------------------> |    ros_gz_bridge Node       |   |
+|   |   (Lyapunov / Cascade)   |                      | (ros_gz_sim parameter_bridge) | |
+|   +--------------------------+                      +-----------------------------+   |
+|                ^                                                   |                  |
+|                |                                                   | gz.msgs.Twist    |
+|                | /odom                                             v                  |
+|   +--------------------------+                      +-----------------------------+   |
+|   |     telemetry_logger     |                      |       GAZEBO HARMONIC       |   |
+|   |  (e(t), tr, ts, sigma%)  |                      |                             |   |
+|   +--------------------------+                      |  Model: 'khepera4'          |   |
+|                ^                                    |  DiffDrive System Plugin    |   |
+|                |                                    |  JointStatePublisher Plugin |   |
+|   +--------------------------+                      |  DART Physics Engine        |   |
+|   |    control_dashboard     |                      +-----------------------------+   |
+|   |  (Qt Real-Time Telemetry)|                                     |                  |
+|   +--------------------------+                                     | gz.msgs.Odometry |
+|                                                                    v gz.msgs.Image    |
+|   Topics Bridged:                                                  v gz.msgs.IMU      |
+|   - /clock              [rosgraph_msgs/msg/Clock] <---------------+                   |
+|   - /cmd_vel            [geometry_msgs/msg/Twist]                                     |
+|   - /odom               [nav_msgs/msg/Odometry]  <----------------+                   |
+|   - /joint_states       [sensor_msgs/msg/JointState] <------------+                   |
+|   - /camera/image_raw   [sensor_msgs/msg/Image]  <----------------+                   |
+|   - /imu/data           [sensor_msgs/msg/Imu]    <----------------+                   |
+|   - /tf                 [tf2_msgs/msg/TFMessage] <----------------+                   |
++---------------------------------------------------------------------------------------+
+```
+
+---
+
+## 🤝 Multi-Team Integration & Modular Architecture
+
+BRT K4 is engineered as an extensible modular robotics platform designed for parallel development across interdisciplinary engineering teams.
+
+```
+                    +-------------------------------------+
+                    |       BRT K4 Base Robot Core        |
+                    |   (URDF / Meshes / Gazebo World)    |
+                    +-------------------------------------+
+                                       |
+        +------------------+-----------+-----------+------------------+
+        |                  |                       |                  |
+        v                  v                       v                  v
++---------------+  +---------------+       +---------------+  +---------------+
+|  Core Control |  |  Robotic Arm  |       |   Swarm Team  |  | AI / Neural   |
+|  & BSA Theory |  |  Integration  |       |  Multi-Robot  |  | Vision & RL   |
+| (A. Berteanu) |  | Modular Mount |       |  Namespacing  |  | Perception    |
++---------------+  +---------------+       +---------------+  +---------------+
+```
+
+### 1. Core Modeling & Closed-Loop Control (Andrei Berteanu)
+- **Theoretical Foundations:** Complies with the *Bazele Sistemelor Automate (BSA)* academic charter led by Prof. Ioan Dumitrache.
+- **Actuator Transfer Function ($H_m(s)$):** Derives continuous-time DC motor dynamics:
+  $$u(t) = R_a i_a(t) + L_a \frac{d i_a(t)}{dt} + K_e \omega_m(t)$$
+  $$J_{eq} \frac{d \omega_m(t)}{dt} + b_{eq} \omega_m(t) = K_t i_a(t) - \tau_L(t)$$
+  Neglecting small armature inductance ($L_a \approx 0$):
+  $$H_m(s) = \frac{\Omega_m(s)}{U(s)} = \frac{K_m}{\tau_m s + 1}$$
+- **Cascade Feedback Structure:**
+  - *Inner Loop ($\sim 100\text{ Hz}$):* Direct wheel speed feedback $(\omega_R, \omega_L)$ rejecting friction and battery voltage degradation.
+  - *Outer Loop ($\sim 20\text{ Hz}$):* Non-linear posture regulator transforming Cartesian tracking errors $(e_x, e_y, e_\theta)$ into polar coordinates $(\rho, \alpha, \beta)$:
+    $$\rho = \sqrt{\Delta x^2 + \Delta y^2}, \quad \alpha = -\theta + \text{atan2}(\Delta y, \Delta x), \quad \beta = -\theta - \alpha + \theta_{goal}$$
+    Control Law:
+    $$v = k_\rho \rho \cos\alpha, \quad \omega = k_\alpha \alpha + k_\beta \beta$$
+- **Stability & Performance Metrics:** Evaluated against optimal second-order damping ratio $\zeta = \frac{\sqrt{2}}{2} \approx 0.707$ for an overshoot $\sigma\% \le 4.3\%$, with phase margin $\gamma_k \ge 60^\circ$ and real-time transient telemetry logging ($t_r, t_s, \sigma\%, e_{st}$).
+
+### 2. Robotic Arm Team (Modular Upper Chassis Interface)
+- **Mechanical Mounting Interface:** The upper shell of the Khepera IV (`base_link` at $Z = 0.0538\text{ m}$) provides dedicated rigid attachment frames (`arm_base_mount_joint` and `arm_mount_link`).
+- **Inertial & Payload Specifications:**
+  - Maximum recommended arm payload: $300\text{ g}$ (maintains total weight below $850\text{ g}$).
+  - Dynamic Center of Mass (CoM): The base inertia tensor ($I_{xx} = I_{yy} = 0.000693\text{ kg}\cdot\text{m}^2, I_{zz} = 0.001127\text{ kg}\cdot\text{m}^2$) is parametrized to automatically account for dynamic end-effector reaction torques.
+- **Integration Points:**
+  - URDF extension point via `<xacro:include filename="khepera4_arm.xacro" />`.
+  - Joint trajectory controller integration bridging MoveIt 2 with the mobile base.
+
+### 3. Swarm Team (Multi-Robot Namespace Support)
+- **Decentralized Multi-Robot Architecture:**
+  - Configurable ROS 2 namespaces (e.g., `/k4_01`, `/k4_02`, `/k4_leader`, `/k4_follower_1`).
+  - Isolated topic trees:
+    - `/<robot_ns>/cmd_vel`
+    - `/<robot_ns>/odom`
+    - `/<robot_ns>/camera/image_raw`
+    - `/<robot_ns>/imu/data`
+- **TF Prefixing & Coordinate Isolation:**
+  - Frames mapped dynamically: `<robot_ns>/odom` $\to$ `<robot_ns>/base_footprint` $\to$ `<robot_ns>/base_link`.
+- **Swarm Operations:** Multi-robot spawner launch file ready for decentralized consensus algorithms, flocking behavior, and virtual-structure formation tracking.
+
+### 4. Neural Network / AI Team (Standardized AI Interfaces)
+- **Observation Space (Standard ROS 2 Topics):**
+  | Modality | Topic | Message Type | Specifications |
+  | :--- | :--- | :--- | :--- |
+  | **RGB Vision** | `/camera/image_raw` | `sensor_msgs/msg/Image` | WVGA ($640 \times 480$), 30 FPS, $60^\circ$ HFOV |
+  | **Inertial IMU** | `/imu/data` | `sensor_msgs/msg/Imu` | 6-DOF (Linear Accel + Angular Vel) @ 100 Hz |
+  | **Odometry** | `/odom` | `nav_msgs/msg/Odometry` | Ground-truth state estimation @ 50 Hz |
+  | **IR Proximity Ring** | `/ir_sensors` | `sensor_msgs/msg/Range` | 8 bumper sensors configured radially |
+  | **Ultrasonic Sonar** | `/us_sensors` | `sensor_msgs/msg/Range` | 5 ultrasonic distance transceivers |
+  | **Floor Ground IR**| `/ground_sensors`| `sensor_msgs/msg/Range` | 4 downward cliff/line-tracking sensors |
+- **Action Space:**
+  - Standard velocity control: `geometry_msgs/msg/Twist` on `/cmd_vel` ($v \in [-0.25, 0.25]\text{ m/s}$, $\omega \in [-1.8, 1.8]\text{ rad/s}$).
+- **AI Framework Compatibility:** Drop-in compatibility with Gymnasium environments, PyTorch reinforcement learning pipelines (PPO, SAC), Isaac Lab bridges, and Vision-Language-Action (VLA) navigation models.
+
+---
+
+## 🚀 Running the Simulation
+
+BRT K4 supports seamless execution across all computing platforms through a unified launcher script.
+
+### Interactive Launcher (`./run.sh`)
+
+Ensure executable permissions are set:
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+On first boot, if `.env` does not yet exist, `./run.sh` interactively prompts you to choose the default mode and remembers your selection:
+```text
+======================================================================
+  BRT K4: Khepera IV Simulation Launcher (ROS 2 Jazzy & Harmonic)
+======================================================================
+No configuration found. Please select your default simulation mode:
+  1) Capable PC - Native GUI (WSLg / GPU pass-through)
+  2) Web Browser - Quick demo (noVNC on http://localhost:6080)
+Select [1-2]: 
+```
+
+#### Command-Line Flags
+You can bypass prompts or override default settings anytime using CLI flags:
+```bash
+./run.sh --native   # Launch directly in Native GUI mode (WSLg / X11 GPU)
+./run.sh --web      # Launch directly in Web Browser mode (noVNC)
+./run.sh --build    # Rebuild Docker container images
+./run.sh --config   # Reconfigure default simulation mode and web port
+./run.sh --help     # Display complete usage cheat sheet
+```
+
+---
+
+### Mode A: Native GUI (WSLg / GPU Pass-Through)
+*Recommended for capable desktop workstations, Linux laptops, and Windows 11 with WSLg.*
+
+- Mounts host `/tmp/.X11-unix` and GPU device nodes (`/dev/dri`).
+- Provides 60+ FPS native hardware-accelerated rendering with direct Gazebo Harmonic graphical UI and Qt dashboard windows.
+
+Launch command:
+```bash
+./run.sh --native
+```
+
+---
+
+### Mode B: Web Browser (noVNC for Low-Spec / Academic PCs)
+*Recommended for student laptops, low-spec systems without dedicated GPUs, remote headless servers, or quick classroom presentations.*
+
+- Runs a lightweight virtual display server (`Xvfb`), window manager (`fluxbox`), VNC server (`x11vnc`), and HTML5 WebSocket bridge (`novnc`).
+- Accessible from any web browser without installing any software or graphics drivers.
+
+Launch command:
+```bash
+./run.sh --web
+```
+
+Open in your browser:
+```text
+http://localhost:6080
+```
+*(Or your custom configured port, e.g., `http://localhost:8085`)*
+
+---
+
+### Native Host Execution (No Docker)
+
+If you have ROS 2 Jazzy and Gazebo Harmonic installed natively on Ubuntu 24.04:
+
+```bash
+# 1. Source ROS 2 Jazzy
+source /opt/ros/jazzy/setup.bash
+
+# 2. Build the workspace
+cd ~/Desktop/khepera4_ws
+colcon build --symlink-install
+source install/setup.bash
+
+# 3. Launch Gazebo Simulation & ROS 2 Bridge
+ros2 launch khepera4_description khepera4_sim.launch.py
+
+# 4. In a separate terminal, launch the Closed-Loop Controller
+source install/setup.bash
+ros2 launch khepera4_control closed_loop.launch.py mode:=step goal_x:=1.0 goal_y:=0.5
+
+# 5. In a separate terminal, launch the Control Station Dashboard
+source install/setup.bash
+ros2 launch khepera4_control control_station.launch.py
+```
+
+---
+
+### 📚 Interactive Educational Guide
+
+An interactive, browser-based standalone educational simulator is included in the workspace:
+- Explore differential kinematics, instantaneous center of curvature (ICC), and wheel speed dynamics live in 2D.
+- Drag damping ratio ($\zeta$) and natural frequency ($\omega_n$) sliders to synthesize step responses and analyze Bode plots.
+- Drive the robot in a 2D canvas arena or test waypoint guidance with real-time error plotting.
+
+Open directly in Chrome or Firefox:
+```bash
+xdg-open khepera4_guide/index.html
+```
+Or start a local web server:
+```bash
+python3 -m http.server 8080 -d khepera4_guide/
+# Navigate to http://localhost:8080
+```
+
+---
+
+## ⚙️ Configuration via `.env` (Port Conflict Safeguards)
+
+Configuration is managed via `.env` in the workspace root. A tracked template is provided in [`.env.example`](.env.example):
+
+```bash
+# ==============================================================================
+# BRT K4 Khepera IV - Environment Configuration
+# ==============================================================================
+
+# Simulation default mode: 'native' (WSLg / GPU) or 'web' (noVNC HTML5)
+KHEPERA_DEFAULT_MODE=native
+
+# Web Browser noVNC port (Default: 6080)
+# IMPORTANT: Avoid port 1947 to prevent conflicts with Sentinel HASP License Manager!
+KHEPERA_WEB_PORT=6080
+
+# ROS 2 Domain ID for multi-robot / multi-machine DDS isolation
+ROS_DOMAIN_ID=42
+```
+
+> [!WARNING]
+> **Avoid Port 1947 (Sentinel HASP / SafeNet Conflict):**  
+> Port `1947` is strictly reserved by Sentinel HASP / SafeNet License Manager (frequently active in academic engineering labs for software licensing like MATLAB, SolidWorks, or ANSYS). The default noVNC port is set to `6080`. If `6080` is in use, modify `KHEPERA_WEB_PORT` in your `.env` file (e.g. to `6081` or `8085`).
+
+---
+
+## 🤖 Physical Robot Deployment (Offboard ROS 2 Bridge)
+
+The identical control software developed in this repository deploys onto the physical K-Team Khepera IV robot through an **offboard distributed ROS 2 bridge architecture**:
+
+```
++-----------------------------------+       Wi-Fi / DDS      +----------------------------------+
+|    Host Workstation / Offboard    | <====================> |       Physical Khepera IV        |
+|                                   |                        |                                  |
+|  - closed_loop_controller (ROS 2) |                        |  - Embedded ARM Cortex-A8 (Linux)|
+|  - telemetry_logger               |                        |  - libkhepera C Motor Control    |
+|  - control_dashboard / Navigation |                        |  - libkhepera Sensor Transceivers|
+|  - offboard_khepera_bridge_node   |                        |  - TCP / UDP Hardware Socket Srv |
++-----------------------------------+                        +----------------------------------+
+```
+
+- **Zero-Code Sim-to-Real Portability:** The high-level ROS 2 controller node publishes standard `/cmd_vel` (`Twist`) and subscribes to `/odom` (`Odometry`). The simulation and physical hardware expose identical ROS 2 message signatures.
+- **Embedded Abstraction:** The Khepera IV onboard Linux computer runs a lightweight hardware daemon communicating with low-level motor drivers via `libkhepera`. The offboard ROS 2 bridge translates `/cmd_vel` velocities $(v, \omega)$ into individual wheel motor ticks via inverse kinematics:
+  $$\omega_R = \frac{v + \frac{L}{2}\omega}{r}, \quad \omega_L = \frac{v - \frac{L}{2}\omega}{r}$$
+- **Sim-to-Real Compensation:** Closed-loop outer regulation with Lyapunov polar error compensation actively rejects real-world floor wheel slip, mechanical deadband, and motor battery voltage decay.
+
+---
+
+## 📂 Directory Structure
+
+```text
+khepera4_ws/
+├── .devcontainer/
+│   └── devcontainer.json            # VS Code remote container configuration
+├── docker/
+│   ├── Dockerfile                   # Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic + noVNC
+│   ├── docker-compose.yml           # Services: khepera-native & khepera-web
+│   ├── entrypoint.sh                # Environment initialization & GZ_SIM_RESOURCE_PATH setup
+│   └── start-web.sh                 # Headless Xvfb + fluxbox + x11vnc + noVNC startup
+├── khepera4_guide/
+│   ├── index.html                   # Interactive educational dashboard
+│   ├── simulator.js                 # 2D unicycle kinematics & Laplace synthesizer
+│   ├── style.css                    # UI styles & dark mode theme
+│   └── README.md                    # Educational guide documentation
+├── src/
+│   ├── khepera4_control/            # ROS 2 Python Control & Telemetry Package
+│   │   ├── khepera4_control/
+│   │   │   ├── closed_loop_controller.py   # Lyapunov polar error closed-loop controller
+│   │   │   ├── dashboard.py                # Qt-based live control & telemetry station
+│   │   │   ├── telemetry_logger.py         # CSV & metrics recorder for step responses
+│   │   │   ├── open_loop_benchmark.py      # Open-loop calibration routine
+│   │   │   └── common.py                   # Math utilities & coordinate transforms
+│   │   └── launch/
+│   │       ├── closed_loop.launch.py       # Controller execution launch
+│   │       ├── control_station.launch.py   # Simulation + dashboard station launch
+│   │       └── benchmark.launch.py         # Benchmark routine launch
+│   └── khepera4_description/        # ROS 2 Gazebo Model Package
+│       ├── meshes/                  # 3D meshes (chassis, wheels, casters)
+│       ├── urdf/
+│       │   └── khepera4.urdf        # Complete kinematic, dynamic & sensor URDF
+│       ├── worlds/
+│       │   └── khepera4_world.sdf   # Gazebo Harmonic physics world
+│       └── launch/
+│           └── khepera4_sim.launch.py # Simulation + parameter bridge launch
+├── .env.example                     # Environment template with port configuration
+├── .gitignore                       # Clean Git tracking configuration
+├── khepera_iv_control_systems_research_charter.md # Academic control research paper charter
+├── README.md                        # Project documentation (this file)
+└── run.sh                           # Interactive multi-modal simulation launcher
+```
+
+---
+
+## 🛠️ Git Workflow & Upstream Collaboration
+
+This repository is maintained under the GitHub organization at:
+**[https://github.com/zvafe/khepera4-ros2-stack](https://github.com/zvafe/khepera4-ros2-stack)**
+
+### Pushing Your Changes Upstream
+
+To push your initialized repository and commit upstream to `zvafe/khepera4-ros2-stack`:
+
+```bash
+# Verify remote configuration
+git remote -v
+
+# Push main branch to upstream GitHub
+git push -u origin main
+```
+
+If you authenticate using GitHub Personal Access Tokens (PAT) or SSH keys:
+```bash
+# Optional: Switch to SSH remote if configured
+git remote set-url origin git@github.com:zvafe/khepera4-ros2-stack.git
+git push -u origin main
+```
+
+---
+
+## 📄 License & Credits
+
+- **Authors:** Andrei Berteanu (Core Control & Modeling) & Research Collaborators.
+- **Academic Supervision:** Prof. Ioan Dumitrache, Department of Automatic Control and Systems Engineering, UPB.
+- **License:** Open-source under the Apache License 2.0.

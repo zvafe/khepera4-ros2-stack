@@ -1,0 +1,137 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="khepera4_world">
+    <!-- Simulation Physics (1000 Hz / 1ms update step, DART physics engine) -->
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- Core Gazebo Harmonic Systems -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <!-- Balanced Environment Lighting -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.2 -1.0</direction>
+    </light>
+
+    <!-- Clean Floor / Ground Plane with Standard Surface Friction -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>1.0</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.85 0.85 0.87 1</ambient>
+            <diffuse>0.85 0.85 0.87 1</diffuse>
+            <specular>0.2 0.2 0.2 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Visual Goal Target Indicator (Beacon) -->
+    <model name="goal_marker">
+      <static>true</static>
+      <pose>0.5 0.0 0.005 0 0 0</pose>
+      <link name="marker_link">
+        <!-- Ground target ring -->
+        <visual name="target_ring">
+          <geometry>
+            <cylinder>
+              <radius>0.08</radius>
+              <length>0.004</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.0 0.9 0.2 0.8</ambient>
+            <diffuse>0.0 1.0 0.3 0.8</diffuse>
+            <emissive>0.0 0.6 0.2 1.0</emissive>
+          </material>
+        </visual>
+        <!-- Center bullseye dot -->
+        <visual name="center_dot">
+          <pose>0 0 0.003 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.02</radius>
+              <length>0.006</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>1.0 0.1 0.1 1.0</ambient>
+            <diffuse>1.0 0.2 0.2 1.0</diffuse>
+            <emissive>0.9 0.1 0.1 1.0</emissive>
+          </material>
+        </visual>
+        <!-- Slender vertical flag pin -->
+        <visual name="flag_pin">
+          <pose>0 0 0.08 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.003</radius>
+              <length>0.16</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.2 0.8 1.0 1.0</ambient>
+            <diffuse>0.2 0.8 1.0 1.0</diffuse>
+            <emissive>0.2 0.5 0.9 1.0</emissive>
+          </material>
+        </visual>
+        <!-- Top glowing beacon sphere -->
+        <visual name="flag_sphere">
+          <pose>0 0 0.16 0 0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.018</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>1.0 0.8 0.0 1.0</ambient>
+            <diffuse>1.0 0.9 0.0 1.0</diffuse>
+            <emissive>0.9 0.8 0.0 1.0</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

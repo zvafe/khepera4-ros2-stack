@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Khepera IV Control Systems & Robotics Guide (BSA)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css">
+  <!-- MathJax / KaTeX for LaTeX Math Typesetting -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body class="bg-[#0b0f17] text-slate-100 antialiased min-h-screen">
+
+  <!-- Header Navigation Bar -->
+  <header class="border-b border-slate-800 bg-[#0f141f]/90 backdrop-blur sticky top-0 z-50 px-6 py-4">
+    <div class="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <div class="flex items-center space-x-3">
+        <span class="text-2xl">🤖</span>
+        <div>
+          <h1 class="text-lg font-bold text-white tracking-tight">Khepera IV Control Systems Architecture</h1>
+          <p class="text-xs text-sky-400 font-medium">Course: Bazele Sistemelor Automate (BSA) | Academic Lead: Prof. Ioan Dumitrache</p>
+        </div>
+      </div>
+      <nav class="flex flex-wrap gap-2 text-xs">
+        <a href="#intro" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Introduction</a>
+        <a href="#kinematics" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Kinematics</a>
+        <a href="#brain" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition">1-2-3 Brain Loop</a>
+        <a href="#step-response" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition">2nd-Order Metrics</a>
+        <a href="#live-sim" class="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-white font-semibold shadow-sm transition">Live Browser Arena</a>
+        <a href="#commands" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Terminal Cheat Sheet</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-10 space-y-16">
+
+    <!-- HERO SECTION: THE BIG PICTURE -->
+    <section id="intro" class="bg-gradient-to-br from-slate-900 to-[#121824] border border-slate-800 rounded-2xl p-8 shadow-xl">
+      <div class="max-w-4xl space-y-4">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-950 border border-sky-800 text-sky-400 text-xs font-semibold">
+          <span>🎯</span> Undergraduate Masterclass
+        </div>
+        <h2 class="text-3xl font-extrabold text-white">Understanding Closed-Loop Mobile Robotics From Scratch</h2>
+        <p class="text-slate-300 text-base leading-relaxed">
+          Welcome! If you are an engineering student a bit rusty on math, this interactive dashboard is specifically written for you. 
+          Every concept is introduced <strong>once, intuitively</strong>, with real physical analogies, interactive sliders, and live animations.
+        </p>
+      </div>
+
+      <!-- The Triad Architecture Diagram -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
+        <div class="bg-[#161c28] border border-slate-800 rounded-xl p-5 hover:border-sky-500/50 transition">
+          <div class="w-10 h-10 rounded-lg bg-sky-950 border border-sky-800 text-sky-400 flex items-center justify-center font-bold mb-3">1</div>
+          <h3 class="text-white font-bold text-base mb-1">Gazebo Harmonic</h3>
+          <p class="text-xs text-slate-400 leading-relaxed mb-3">The Virtual Physical Universe</p>
+          <ul class="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
+            <li>Solves Newton-Euler rigid body dynamics (DART solver @ 1000 Hz).</li>
+            <li>Calculates ground friction ($\mu = 1.0$) and wheel contact forces.</li>
+            <li>Renders realistic 3D camera feeds and IMU sensor data.</li>
+          </ul>
+        </div>
+
+        <div class="bg-[#161c28] border border-slate-800 rounded-xl p-5 hover:border-emerald-500/50 transition">
+          <div class="w-10 h-10 rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-400 flex items-center justify-center font-bold mb-3">2</div>
+          <h3 class="text-white font-bold text-base mb-1">ROS 2 Middleware</h3>
+          <p class="text-xs text-slate-400 leading-relaxed mb-3">The Nervous System</p>
+          <ul class="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
+            <li>Passes asynchronous messages between simulator and controllers.</li>
+            <li>Bridge converts <code class="text-sky-300">gz.msgs</code> $\longleftrightarrow$ <code class="text-emerald-300">ROS 2 messages</code>.</li>
+            <li>Standard topics: <code class="text-amber-300">/cmd_vel</code>, <code class="text-sky-300">/odom</code>, <code class="text-purple-300">/tf</code>.</li>
+          </ul>
+        </div>
+
+        <div class="bg-[#161c28] border border-slate-800 rounded-xl p-5 hover:border-purple-500/50 transition">
+          <div class="w-10 h-10 rounded-lg bg-purple-950 border border-purple-800 text-purple-400 flex items-center justify-center font-bold mb-3">3</div>
+          <h3 class="text-white font-bold text-base mb-1">Feedback Controllers</h3>
+          <p class="text-xs text-slate-400 leading-relaxed mb-3">The Robot's Brain</p>
+          <ul class="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
+            <li>Constantly measures tracking error: $e(t) = r(t) - y(t)$.</li>
+            <li>Lyapunov outer-loop computes velocity setpoints $(v^*, \omega^*)$.</li>
+            <li>Guarantees zero steady-state error and bounded overshoot.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 1: THE PHYSICAL PLANT -->
+    <section class="space-y-6">
+      <div class="border-b border-slate-800 pb-3">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <span class="px-2.5 py-0.5 rounded bg-sky-950 text-sky-400 text-xs font-mono uppercase tracking-wider">Module 1</span>
+          The Physical Plant: K-Team Khepera IV Geometry
+        </h2>
+        <p class="text-sm text-slate-400 mt-1">Understanding the physical numbers that govern how our robot behaves.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+        <div class="space-y-4 text-sm text-slate-300 leading-relaxed">
+          <p>
+            The Khepera IV is a miniature, high-precision Swiss mobile research robot designed by <strong>K-Team</strong>. 
+            Because it is a <strong>differential-drive unicycle platform</strong>, it does NOT have a steering wheel like a car! 
+            Instead, it steers entirely by turning its left and right drive wheels at different speeds.
+          </p>
+
+          <div class="grid grid-cols-2 gap-3 pt-2">
+            <div class="bg-[#161c28] border border-slate-800 p-3 rounded-lg">
+              <span class="text-xs text-slate-400 block">Wheel Radius ($r$)</span>
+              <span class="text-lg font-mono font-bold text-sky-400">0.021 m (21 mm)</span>
+            </div>
+            <div class="bg-[#161c28] border border-slate-800 p-3 rounded-lg">
+              <span class="text-xs text-slate-400 block">Wheel Separation ($L$)</span>
+              <span class="text-lg font-mono font-bold text-sky-400">0.1054 m (105.4 mm)</span>
+            </div>
+            <div class="bg-[#161c28] border border-slate-800 p-3 rounded-lg">
+              <span class="text-xs text-slate-400 block">Total Mass ($m$)</span>
+              <span class="text-lg font-mono font-bold text-emerald-400">0.540 kg (540 g)</span>
+            </div>
+            <div class="bg-[#161c28] border border-slate-800 p-3 rounded-lg">
+              <span class="text-xs text-slate-400 block">Max Linear Speed</span>
+              <span class="text-lg font-mono font-bold text-amber-400">0.25 m/s (25 cm/s)</span>
+            </div>
+          </div>
+
+          <div class="bg-amber-950/30 border border-amber-900/50 rounded-lg p-3 text-xs text-amber-200">
+            <strong>⚠️ Intuition Check on Casters:</strong> The robot has two passive ball casters (front and rear) to keep it balanced upright. 
+            In Gazebo, their friction is set to virtually zero ($\mu = 0.0001$) so only the two rubber drive wheels grip the floor ($\mu = 1.0$).
+          </div>
+        </div>
+
+        <div class="bg-[#121620] border border-slate-800 rounded-xl p-5 text-center">
+          <svg viewBox="0 0 400 320" class="w-full max-w-sm mx-auto">
+            <!-- Ground ring -->
+            <ellipse cx="200" cy="160" rx="120" ry="120" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+            <!-- Chassis top -->
+            <circle cx="200" cy="160" r="110" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+            <!-- Front Bumper arc -->
+            <path d="M 96,110 A 110,110 0 0,1 304,110" fill="none" stroke="#2563eb" stroke-width="8"/>
+            <!-- Left Wheel -->
+            <rect x="50" y="115" width="22" height="90" rx="4" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+            <text x="61" y="85" fill="#38bdf8" font-size="11" text-anchor="middle" font-weight="bold">Left Wheel</text>
+            <text x="61" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">ω_L</text>
+            <!-- Right Wheel -->
+            <rect x="328" y="115" width="22" height="90" rx="4" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+            <text x="339" y="85" fill="#38bdf8" font-size="11" text-anchor="middle" font-weight="bold">Right Wheel</text>
+            <text x="339" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">ω_R</text>
+            <!-- Front Caster -->
+            <circle cx="200" cy="65" r="10" fill="#94a3b8" stroke="#475569" stroke-width="2"/>
+            <text x="200" y="45" fill="#94a3b8" font-size="9" text-anchor="middle">Front Ball Caster</text>
+            <!-- Rear Caster -->
+            <circle cx="200" cy="255" r="10" fill="#94a3b8" stroke="#475569" stroke-width="2"/>
+            <text x="200" y="280" fill="#94a3b8" font-size="9" text-anchor="middle">Rear Ball Caster</text>
+            <!-- Dimension line L -->
+            <line x1="72" y1="160" x2="328" y2="160" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4,4"/>
+            <circle cx="200" cy="160" r="4" fill="#f59e0b"/>
+            <text x="200" y="152" fill="#fbbf24" font-size="11" font-weight="bold" text-anchor="middle">Wheelbase L = 105.4 mm</text>
+            <!-- Forward Heading Arrow -->
+            <line x1="200" y1="160" x2="200" y2="85" stroke="#10b981" stroke-width="3"/>
+            <polygon points="200,75 194,88 206,88" fill="#10b981"/>
+            <text x="215" y="85" fill="#10b981" font-size="11" font-weight="bold">Forward +X</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: KINEMATICS EXPLAINED -->
+    <section id="kinematics" class="space-y-6">
+      <div class="border-b border-slate-800 pb-3">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <span class="px-2.5 py-0.5 rounded bg-emerald-950 text-emerald-400 text-xs font-mono uppercase tracking-wider">Module 2</span>
+          Differential-Drive Kinematics (How 2 Wheels Steer)
+        </h2>
+        <p class="text-sm text-slate-400 mt-1">Connecting wheel rotations $\omega_L, \omega_R$ directly to chassis speeds $v, \omega$.</p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <!-- Math & Intuition Cards -->
+        <div class="space-y-5">
+          <div class="bg-[#141a26] border border-slate-800 rounded-xl p-5 space-y-3">
+            <h3 class="text-base font-bold text-white flex items-center gap-2">
+              <span class="w-6 h-6 rounded bg-sky-950 text-sky-400 flex items-center justify-center text-xs font-bold">1</span>
+              Forward Kinematics: Wheels $\longrightarrow$ Chassis
+            </h3>
+            <p class="text-xs text-slate-300 leading-relaxed">
+              If the motors are spinning at angular velocities $\omega_R$ and $\omega_L$ (in radians/second), what is the resulting forward speed $v$ and turn rate $\omega$ of the robot?
+            </p>
+            <div class="formula-box text-sm text-sky-300">
+              $$v = \frac{r}{2} (\omega_R + \omega_L) \quad \text{[Forward Linear Velocity, m/s]}$$
+              $$\omega = \frac{r}{L} (\omega_R - \omega_L) \quad \text{[Angular Turn Rate, rad/s]}$$
+            </div>
+            <p class="text-xs text-slate-400">
+              <strong>Intuition:</strong> Forward speed $v$ is simply the <em>average</em> speed of the two wheels. 
+              Turning rate $\omega$ is proportional to the <em>difference</em> between the right and left wheel speeds.
+            </p>
+          </div>
+
+          <div class="bg-[#141a26] border border-slate-800 rounded-xl p-5 space-y-3">
+            <h3 class="text-base font-bold text-white flex items-center gap-2">
+              <span class="w-6 h-6 rounded bg-amber-950 text-amber-400 flex items-center justify-center text-xs font-bold">2</span>
+              Inverse Kinematics: Chassis $\longrightarrow$ Wheels
+            </h3>
+            <p class="text-xs text-slate-300 leading-relaxed">
+              When our ROS 2 controller outputs a command on <code class="text-amber-400">/cmd_vel</code> specifying linear speed $v$ and turn rate $\omega$, how does the robot know how fast each wheel must spin?
+            </p>
+            <div class="formula-box text-sm text-amber-300">
+              $$\omega_R = \frac{v + \frac{L}{2} \omega}{r} \quad \text{[Right Wheel Speed Setpoint]}$$
+              $$\omega_L = \frac{v - \frac{L}{2} \omega}{r} \quad \text{[Left Wheel Speed Setpoint]}$$
+            </div>
+            <p class="text-xs text-slate-400">
+              In Gazebo, the <code class="text-sky-300">DiffDrive</code> plugin solves these exact inverse kinematic equations 1000 times per second to command the virtual wheel joints.
+            </p>
+          </div>
+        </div>
+
+        <!-- Interactive Kinematics Simulator Widget -->
+        <div class="bg-[#121620] border border-slate-800 rounded-xl p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-bold text-white text-base">Interactive Kinematics Explorer</h3>
+              <span class="text-xs px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 font-mono">Live Animation</span>
+            </div>
+            <p class="text-xs text-slate-400 mb-5">
+              Drag the sliders below to change left and right wheel speeds. Watch how the Khepera IV turns and observe the instantaneous turning circle!
+            </p>
+
+            <!-- Sliders -->
+            <div class="space-y-4 bg-[#18202e] p-4 rounded-lg border border-slate-800 mb-5">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-slate-300 font-semibold">Left Wheel Angular Speed ($\omega_L$):</span>
+                  <span id="val-wl" class="font-mono text-sky-400 font-bold">5.0 rad/s</span>
+                </div>
+                <input id="slider-wl" type="range" min="-15" max="15" step="0.5" value="5" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400">
+              </div>
+
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-slate-300 font-semibold">Right Wheel Angular Speed ($\omega_R$):</span>
+                  <span id="val-wr" class="font-mono text-sky-400 font-bold">5.0 rad/s</span>
+                </div>
+                <input id="slider-wr" type="range" min="-15" max="15" step="0.5" value="5" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400">
+              </div>
+            </div>
+
+            <!-- Calculated Results HUD -->
+            <div class="grid grid-cols-2 gap-3 mb-5">
+              <div class="bg-[#0f131c] p-3 rounded-lg border border-slate-800">
+                <span class="text-xs text-slate-400 block">Linear Speed ($v$)</span>
+                <span id="out-v" class="text-lg font-mono font-bold text-emerald-400">0.105 m/s</span>
+              </div>
+              <div class="bg-[#0f131c] p-3 rounded-lg border border-slate-800">
+                <span class="text-xs text-slate-400 block">Angular Speed ($\omega$)</span>
+                <div class="flex items-baseline gap-1.5">
+                  <span id="out-w" class="text-lg font-mono font-bold text-sky-400">0.000 rad/s</span>
+                  <span id="out-w-deg" class="text-xs font-mono text-slate-400">(0.0 °/s)</span>
+                </div>
+              </div>
+              <div class="bg-[#0f131c] p-3 rounded-lg border border-slate-800 col-span-2 flex justify-between items-center">
+                <div>
+                  <span class="text-xs text-slate-400 block">Turning Radius ($R = v/\omega$)</span>
+                  <span id="out-icc" class="text-sm font-mono font-bold text-purple-400">∞ (Straight Line)</span>
+                </div>
+                <span id="out-behavior" class="text-xs px-2.5 py-1 rounded bg-slate-800 font-semibold text-emerald-400">Pure Translation</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Canvas Animation -->
+          <canvas id="canvas-kinematics" width="460" height="230" class="w-full border border-slate-800"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 3: THE 1-2-3 CLOSED LOOP BRAIN -->
+    <section id="brain" class="space-y-6">
+      <div class="border-b border-slate-800 pb-3">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <span class="px-2.5 py-0.5 rounded bg-purple-950 text-purple-400 text-xs font-mono uppercase tracking-wider">Module 3</span>
+          Inside the Robot's Brain: The 3-Step Closed Loop
+        </h2>
+        <p class="text-sm text-slate-400 mt-1">
+          Why unicycles cannot move sideways, and how Lyapunov polar coordinates steer the robot accurately onto target waypoints.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Step 1 Card -->
+        <div class="bg-[#141924] border border-slate-800 rounded-xl p-5 space-y-3">
+          <div class="flex items-center gap-2">
+            <span class="step-badge step-1-badge">1</span>
+            <h3 class="text-base font-bold text-sky-400">Perception</h3>
+          </div>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            Every 20 ms ($50\text{ Hz}$), optical encoders count wheel ticks. Dead reckoning calculates the robot's real pose:
+          </p>
+          <div class="formula-box text-xs text-sky-300">
+            $$\begin{bmatrix} x(t+\Delta t) \\ y(t+\Delta t) \\ \theta(t+\Delta t) \end{bmatrix} = \begin{bmatrix} x + v\cos(\theta)\Delta t \\ y + v\sin(\theta)\Delta t \\ \theta + \omega\Delta t \end{bmatrix}$$
+          </div>
+          <p class="text-xs text-slate-400">
+            Published on topic <code class="text-sky-300">/odom</code> as <code class="text-slate-300">nav_msgs/Odometry</code>.
+          </p>
+        </div>
+
+        <!-- Step 2 Card -->
+        <div class="bg-[#141924] border border-slate-800 rounded-xl p-5 space-y-3">
+          <div class="flex items-center gap-2">
+            <span class="step-badge step-2-badge">2</span>
+            <h3 class="text-base font-bold text-amber-400">Error Dynamics</h3>
+          </div>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            The target is at $(x^*, y^*)$. A unicycle cannot drive sideways, so we transform Cartesian error into <strong>polar coordinates</strong>:
+          </p>
+          <div class="formula-box text-xs text-amber-300">
+            $$\rho = \sqrt{\Delta x^2 + \Delta y^2} \quad \text{[Distance to goal]}$$
+            $$\alpha = \text{atan2}(\Delta y, \Delta x) - \theta \quad \text{[Heading steering error]}$$
+            $$\beta = -\theta - \alpha + \theta^* \quad \text{[Goal orientation error]}$$
+          </div>
+          <p class="text-xs text-slate-400">
+            $\alpha$ tells the robot how much to steer to point at the goal. $\rho$ tells it how far away it is.
+          </p>
+        </div>
+
+        <!-- Step 3 Card -->
+        <div class="bg-[#141924] border border-slate-800 rounded-xl p-5 space-y-3">
+          <div class="flex items-center gap-2">
+            <span class="step-badge step-3-badge">3</span>
+            <h3 class="text-base font-bold text-emerald-400">Cascade Control</h3>
+          </div>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            Lyapunov stability criteria teaches us how to choose velocity setpoints that guarantee smooth convergence without spinning out:
+          </p>
+          <div class="formula-box text-xs text-emerald-300">
+            $$v^* = \text{clamp}(K_\rho \cdot \rho \cdot \cos\alpha, -v_{\max}, v_{\max})$$
+            $$\omega^* = \text{clamp}(K_\alpha \cdot \alpha + K_\beta \cdot \beta, -\omega_{\max}, \omega_{\max})$$
+          </div>
+          <p class="text-xs text-slate-400">
+            Published on <code class="text-emerald-300">/cmd_vel</code>. As the robot gets closer ($\rho \to 0$), speed $v^*$ smoothly decelerates to zero!
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 4: 2ND-ORDER PERFORMANCE METRICS -->
+    <section id="step-response" class="space-y-6">
+      <div class="border-b border-slate-800 pb-3">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <span class="px-2.5 py-0.5 rounded bg-blue-950 text-blue-400 text-xs font-mono uppercase tracking-wider">Module 4</span>
+          Second-Order Step Response Indicators (BSA Charter)
+        </h2>
+        <p class="text-sm text-slate-400 mt-1">
+          When commanding a step displacement (e.g. $0.5\text{ m}$ forward), these standard metrics evaluate control quality.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
+        <!-- Interactive Step Response Synthesizer -->
+        <div class="bg-[#121620] border border-slate-800 rounded-xl p-6 space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="font-bold text-white text-base">Step Response Synthesizer ($H_{cl}(s)$)</h3>
+            <span class="text-xs px-2.5 py-0.5 rounded bg-blue-950 text-blue-400 font-mono">Laplace Transfer Function</span>
+          </div>
+          <p class="text-xs text-slate-400">
+            Adjust damping ratio $\zeta$ and natural frequency $\omega_n$ to see how the step response changes between underdamped, critically damped, and overdamped regimes!
+          </p>
+
+          <div class="space-y-3 bg-[#18202e] p-4 rounded-lg border border-slate-800">
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300 font-semibold">Damping Ratio ($\zeta$):</span>
+                <span id="lbl-zeta" class="font-mono text-sky-400 font-bold">0.71</span>
+              </div>
+              <input id="slider-zeta" type="range" min="0.1" max="1.5" step="0.05" value="0.71" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400">
+            </div>
+
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300 font-semibold">Natural Frequency ($\omega_n$):</span>
+                <span id="lbl-wn" class="font-mono text-sky-400 font-bold">2.5 rad/s</span>
+              </div>
+              <input id="slider-wn" type="range" min="1.0" max="6.0" step="0.2" value="2.5" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400">
+            </div>
+          </div>
+
+          <canvas id="canvas-step-response" width="480" height="200" class="w-full border border-slate-800"></canvas>
+
+          <!-- Performance Readout -->
+          <div class="grid grid-cols-3 gap-3">
+            <div class="bg-[#161c28] p-3 rounded-lg border border-slate-800">
+              <span class="text-xs text-slate-400 block">Overshoot ($\sigma\%$)</span>
+              <span id="lbl-overshoot-calc" class="text-base font-mono font-bold text-amber-400">4.32 %</span>
+            </div>
+            <div class="bg-[#161c28] p-3 rounded-lg border border-slate-800">
+              <span class="text-xs text-slate-400 block">Settling Time ($t_s$)</span>
+              <span id="lbl-ts-calc" class="text-base font-mono font-bold text-purple-400">2.26 s</span>
+            </div>
+            <div class="bg-[#161c28] p-3 rounded-lg border border-slate-800">
+              <span class="text-xs text-slate-400 block">Rise Time ($t_r$)</span>
+              <span id="lbl-tr-calc" class="text-base font-mono font-bold text-sky-400">0.88 s</span>
+            </div>
+          </div>
+          <div class="text-xs text-slate-400">
+            Current Regime: <span id="lbl-regime" class="font-semibold text-emerald-400">Optimal Damping ($\zeta \approx 0.707$)</span>
+          </div>
+        </div>
+
+        <!-- Formulas & Academic Meaning -->
+        <div class="space-y-4 text-sm text-slate-300 leading-relaxed">
+          <div class="bg-[#161c28] border border-slate-800 rounded-xl p-5 space-y-2">
+            <h4 class="font-bold text-white text-base">The 4 Key Engineering Indicators</h4>
+            <ul class="space-y-3 text-xs pt-1">
+              <li>
+                <strong class="text-amber-400">1. Maximum Overshoot ($\sigma\%$, *Suprareglarea*):</strong>
+                <p class="text-slate-400 mt-0.5">How much the robot exceeds the target before stopping. Formula: $\sigma = e^{-\frac{\pi\zeta}{\sqrt{1-\zeta^2}}} \times 100\%$.</p>
+              </li>
+              <li>
+                <strong class="text-purple-400">2. Settling Time ($t_s$, *Timpul de reglare*):</strong>
+                <p class="text-slate-400 mt-0.5">The time after which error remains permanently inside the $2\%$ band. Approx: $t_s \approx \frac{4}{\zeta \omega_n}$.</p>
+              </li>
+              <li>
+                <strong class="text-sky-400">3. Rise Time ($t_r$, *Timpul de creștere*):</strong>
+                <p class="text-slate-400 mt-0.5">Time to accelerate from 10% to 90% of setpoint. Approx: $t_r \approx \frac{\pi - \arccos(\zeta)}{\omega_n \sqrt{1-\zeta^2}}$.</p>
+              </li>
+              <li>
+                <strong class="text-emerald-400">4. Steady-State Error ($e_{st}$, *Eroarea staționară*):</strong>
+                <p class="text-slate-400 mt-0.5">Final offset after coming to a complete standstill ($e_{st} \le 2\text{ cm}$ in our system).</p>
+              </li>
+            </ul>
+          </div>
+
+          <div class="bg-sky-950/30 border border-sky-800/50 rounded-xl p-4 text-xs text-sky-200">
+            <strong>💡 Why Prof. Dumitrache Emphasizes $\zeta = \frac{\sqrt{2}}{2} \approx 0.707$:</strong><br>
+            It is the mathematically proven optimal balance: it achieves the fastest possible settling time with a minimal, safe overshoot of strictly $\le 4.3\%$.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 5: LIVE BROWSER ARENA SIMULATOR -->
+    <section id="live-sim" class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div>
+          <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+            <span class="px-2.5 py-0.5 rounded bg-emerald-950 text-emerald-400 text-xs font-mono uppercase tracking-wider">Module 5</span>
+            Interactive 2D Simulator in the Browser
+          </h2>
+          <p class="text-sm text-slate-400 mt-1">
+            Test Option A (WASD driving), Option B (Step setpoints), and Option C (Square/Circle paths) right now!
+          </p>
+        </div>
+        <!-- Mode Switcher Buttons -->
+        <div class="flex gap-2">
+          <button id="btn-mode-a" class="mode-btn-idle px-3 py-1.5 rounded-lg text-xs transition">Option A: WASD Drive</button>
+          <button id="btn-mode-b" class="mode-btn-active px-3 py-1.5 rounded-lg text-xs transition">Option B: Step Setpoint</button>
+          <button id="btn-mode-c" class="mode-btn-idle px-3 py-1.5 rounded-lg text-xs transition">Option C: Trajectory</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Arena Canvas (2 cols) -->
+        <div class="lg:col-span-2 bg-[#121620] border border-slate-800 rounded-xl p-5 space-y-4">
+          <div class="flex justify-between items-center">
+            <span class="text-xs text-slate-400 font-mono">2D Top-Down Arena (Click arena to place goal in Option B)</span>
+            <button id="btn-reset" class="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Reset Robot Pose</button>
+          </div>
+
+          <canvas id="canvas-arena" width="700" height="340" class="w-full border border-slate-800 cursor-crosshair"></canvas>
+
+          <!-- Interactive Controls per Mode -->
+          <div id="panel-sim-a" style="display: none;" class="bg-[#18202e] p-4 rounded-lg border border-slate-800">
+            <p class="text-xs text-slate-400 mb-3">Use <strong>W, A, S, D</strong> on your keyboard (or spacebar to brake) to drive like in a game:</p>
+            <div class="flex justify-center gap-2">
+              <div id="sim-key-a" class="w-12 h-12 flex items-center justify-center font-bold rounded-lg border border-slate-700 bg-slate-800 text-slate-300">A</div>
+              <div class="flex flex-col gap-2">
+                <div id="sim-key-w" class="w-12 h-12 flex items-center justify-center font-bold rounded-lg border border-slate-700 bg-slate-800 text-slate-300">W</div>
+                <div id="sim-key-s" class="w-12 h-12 flex items-center justify-center font-bold rounded-lg border border-slate-700 bg-slate-800 text-slate-300">S</div>
+              </div>
+              <div id="sim-key-d" class="w-12 h-12 flex items-center justify-center font-bold rounded-lg border border-slate-700 bg-slate-800 text-slate-300">D</div>
+            </div>
+          </div>
+
+          <div id="panel-sim-b" class="flex flex-wrap gap-3 items-center bg-[#18202e] p-4 rounded-lg border border-slate-800">
+            <span class="text-xs text-slate-400">Quick Setpoint Presets:</span>
+            <button id="btn-step-05" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-sm transition">+0.5 m Step</button>
+            <button id="btn-step-10" class="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white font-semibold text-xs shadow-sm transition">+1.0 m Step</button>
+            <span class="text-xs text-amber-400 ml-auto">📍 Or click anywhere on the arena above!</span>
+          </div>
+
+          <div id="panel-sim-c" style="display: none;" class="flex flex-wrap gap-3 items-center bg-[#18202e] p-4 rounded-lg border border-slate-800">
+            <span class="text-xs text-slate-400">Select Trajectory:</span>
+            <button id="btn-traj-square" class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs shadow-sm transition">⬛ 0.7m Square Path</button>
+            <button id="btn-traj-circle" class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs shadow-sm transition">⭕ 0.4m Circular Orbit</button>
+          </div>
+        </div>
+
+        <!-- Right Side: Live Telemetry & Error Curve (1 col) -->
+        <div class="space-y-4">
+          <!-- Dynamic Error Calculator -->
+          <div class="bg-[#121620] border border-slate-800 rounded-xl p-4 space-y-3">
+            <h3 class="font-bold text-white text-sm">Dynamic Error Calculator</h3>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div class="bg-[#18202e] p-2.5 rounded border border-slate-800">
+                <span class="text-slate-400 block text-[11px]">Distance Error ($\rho$)</span>
+                <span id="live-rho" class="font-mono text-rose-400 font-bold text-sm">0.600 m</span>
+              </div>
+              <div class="bg-[#18202e] p-2.5 rounded border border-slate-800">
+                <span class="text-slate-400 block text-[11px]">Heading Error ($\alpha$)</span>
+                <span id="live-alpha" class="font-mono text-amber-400 font-bold text-sm">0.0 °</span>
+              </div>
+              <div class="bg-[#18202e] p-2.5 rounded border border-slate-800">
+                <span class="text-slate-400 block text-[11px]">Pose X, Y</span>
+                <span class="font-mono text-sky-400 font-semibold"><span id="live-x">0.000</span>, <span id="live-y">0.000</span></span>
+              </div>
+              <div class="bg-[#18202e] p-2.5 rounded border border-slate-800">
+                <span class="text-slate-400 block text-[11px]">Heading ($\theta$)</span>
+                <span id="live-yaw" class="font-mono text-purple-400 font-semibold">0.0 °</span>
+              </div>
+              <div class="bg-[#18202e] p-2.5 rounded border border-slate-800">
+                <span class="text-slate-400 block text-[11px]">Speed ($v, \omega$)</span>
+                <span class="font-mono text-emerald-400 font-semibold"><span id="live-v">0.00</span> m/s, <span id="live-w">0.00</span> rad/s</span>
+              </div>
+              <div class="bg-[#18202e] p-2.5 rounded border border-slate-800">
+                <span class="text-slate-400 block text-[11px]">Target Bearing ($\beta$)</span>
+                <span id="live-beta" class="font-mono text-slate-300 font-semibold">0.0 °</span>
+              </div>
+            </div>
+
+            <!-- Measured Indicators -->
+            <div class="pt-2 border-t border-slate-800 grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span class="text-slate-400 block text-[11px]">Overshoot ($\sigma\%$)</span>
+                <span id="live-sigma" class="font-mono text-amber-400 font-bold">-- %</span>
+              </div>
+              <div>
+                <span class="text-slate-400 block text-[11px]">Steady Error ($e_{st}$)</span>
+                <span id="live-est" class="font-mono text-emerald-400 font-bold">-- m</span>
+              </div>
+              <div>
+                <span class="text-slate-400 block text-[11px]">Rise Time ($t_r$)</span>
+                <span id="live-tr" class="font-mono text-sky-400 font-bold">-- s</span>
+              </div>
+              <div>
+                <span class="text-slate-400 block text-[11px]">Settling Time ($t_s$)</span>
+                <span id="live-ts" class="font-mono text-purple-400 font-bold">-- s</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dynamic Error Curve Plot -->
+          <div class="bg-[#121620] border border-slate-800 rounded-xl p-4">
+            <span class="text-xs text-slate-400 font-mono block mb-2">Live Error Convergence Curve: $e(t) = r(t) - y(t)$</span>
+            <canvas id="canvas-error-curve" width="300" height="150" class="w-full border border-slate-800"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 6: WORKSPACE CODE TOUR & CHEAT SHEET -->
+    <section id="commands" class="space-y-6">
+      <div class="border-b border-slate-800 pb-3">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <span class="px-2.5 py-0.5 rounded bg-amber-950 text-amber-400 text-xs font-mono uppercase tracking-wider">Module 6</span>
+          Workspace Architecture & Command Cheat Sheet
+        </h2>
+        <p class="text-sm text-slate-400 mt-1">Exact terminal commands to run the real simulation and Qt dashboard.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Terminal Commands -->
+        <div class="bg-[#141924] border border-slate-800 rounded-xl p-5 space-y-4">
+          <h3 class="font-bold text-white text-base">Quick Terminal Commands</h3>
+
+          <div class="space-y-3 text-xs">
+            <div>
+              <span class="text-slate-400 block mb-1">1. Launch Simulation + Dashboard together (1-Click):</span>
+              <pre class="bg-[#0b0e14] p-3 rounded-lg border border-slate-800 text-sky-300 font-mono overflow-x-auto">ros2 launch khepera4_control control_station.launch.py</pre>
+            </div>
+
+            <div>
+              <span class="text-slate-400 block mb-1">2. Or launch Gazebo Simulation only:</span>
+              <pre class="bg-[#0b0e14] p-3 rounded-lg border border-slate-800 text-emerald-300 font-mono overflow-x-auto">ros2 launch khepera4_description khepera4_sim.launch.py</pre>
+            </div>
+
+            <div>
+              <span class="text-slate-400 block mb-1">3. In a 2nd terminal, launch Qt Control Dashboard:</span>
+              <pre class="bg-[#0b0e14] p-3 rounded-lg border border-slate-800 text-amber-300 font-mono overflow-x-auto">ros2 run khepera4_control control_dashboard</pre>
+            </div>
+
+            <div>
+              <span class="text-slate-400 block mb-1">4. Or run automated step benchmark directly:</span>
+              <pre class="bg-[#0b0e14] p-3 rounded-lg border border-slate-800 text-purple-300 font-mono overflow-x-auto">ros2 run khepera4_control closed_loop_controller --ros-args -p mode:=step -p goal_x:=0.5</pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Files Created & Roles -->
+        <div class="bg-[#141924] border border-slate-800 rounded-xl p-5 space-y-3">
+          <h3 class="font-bold text-white text-base">Workspace File Directory</h3>
+          <ul class="text-xs space-y-2 text-slate-300">
+            <li class="p-2 rounded bg-[#18202e] border border-slate-800">
+              <strong class="text-sky-400 font-mono">urdf/khepera4.urdf</strong>
+              <p class="text-slate-400 mt-0.5">High-fidelity 3D model, DART physical friction, DiffDrive & JointState plugins.</p>
+            </li>
+            <li class="p-2 rounded bg-[#18202e] border border-slate-800">
+              <strong class="text-emerald-400 font-mono">worlds/khepera4_world.sdf</strong>
+              <p class="text-slate-400 mt-0.5">Gazebo world containing ground plane and the dynamic 3D goal marker beacon.</p>
+            </li>
+            <li class="p-2 rounded bg-[#18202e] border border-slate-800">
+              <strong class="text-amber-400 font-mono">khepera4_control/dashboard.py</strong>
+              <p class="text-slate-400 mt-0.5">Full PyQt5 desktop application with WASD controls, 3D beacon teleportation, and live plots.</p>
+            </li>
+            <li class="p-2 rounded bg-[#18202e] border border-slate-800">
+              <strong class="text-purple-400 font-mono">khepera4_control/closed_loop_controller.py</strong>
+              <p class="text-slate-400 mt-0.5">Headless feedback controller computing $t_r, t_s, \sigma\%, e_{st}$ for paper benchmarks.</p>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="border-t border-slate-800 bg-[#0f141f] py-6 text-center text-xs text-slate-500">
+    <p>Khepera IV Control Systems Research Project · University Politehnica of Bucharest · BSA Academic Research Charter</p>
+  </footer>
+
+  <script src="simulator.js"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+/* Custom Styles for Khepera IV Educational Dashboard */
+
+:root {
+    --bg-main: #0b0f17;
+    --bg-card: #131924;
+    --bg-subcard: #1b2333;
+    --border-color: #232d40;
+    --border-accent: #38bdf8;
+    --text-main: #f1f5f9;
+    --text-muted: #94a3b8;
+}
+
+body {
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    scroll-behavior: smooth;
+}
+
+/* Formula Callout Boxes */
+.formula-box {
+    background: linear-gradient(145deg, #161e2e, #111723);
+    border-left: 4px solid #38bdf8;
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+/* Step Badges */
+.step-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    font-weight: 800;
+    font-size: 0.85rem;
+    margin-right: 0.5rem;
+}
+
+.step-1-badge { background-color: #0284c7; color: #ffffff; }
+.step-2-badge { background-color: #ea580c; color: #ffffff; }
+.step-3-badge { background-color: #059669; color: #ffffff; }
+
+/* Interactive Mode Buttons */
+.mode-btn-active {
+    background-color: #0284c7;
+    color: #ffffff;
+    font-weight: 700;
+    border: 1px solid #38bdf8;
+    box-shadow: 0 0 15px rgba(56, 189, 248, 0.35);
+}
+
+.mode-btn-idle {
+    background-color: #1e293b;
+    color: #94a3b8;
+    font-weight: 600;
+    border: 1px solid #334155;
+}
+.mode-btn-idle:hover {
+    background-color: #334155;
+    color: #f8fafc;
+}
+
+/* Smooth Canvas container shadows */
+canvas {
+    border-radius: 8px;
+    background-color: #10141d;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #0b0f17;
+}
+::-webkit-scrollbar-thumb {
+    background: #232d40;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #38bdf8;
+}
