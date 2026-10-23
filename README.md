@@ -4,7 +4,7 @@
 [![Gazebo](https://img.shields.io/badge/Gazebo-Harmonic_8.15-FF6F00?logo=gazebo&logoColor=white)](https://gazebosim.org/docs/harmonic)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04_LTS-E95420?logo=ubuntu&logoColor=white)](https://releases.ubuntu.com/24.04/)
 [![Repository](https://img.shields.io/badge/GitHub-zvafe%2Fkhepera4--ros2--stack-blue?logo=github)](https://github.com/zvafe/khepera4-ros2-stack)
-[![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
+
 
 An academic and industrial-grade cyber-physical simulation and control stack for the **K-Team Khepera IV** differential-drive mobile robot. Built natively on **Ubuntu 24.04 LTS (Noble Numbat)**, **ROS 2 Jazzy Jalisco**, and **Gazebo Harmonic (v8.15+)**.
 
