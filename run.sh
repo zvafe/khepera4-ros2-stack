@@ -16,12 +16,16 @@ Usage:
 Options:
   --native        Launch high-performance Native GUI mode (WSLg / GPU pass-through)
   --web           Launch Web Browser mode (noVNC on http://localhost:\${KHEPERA_WEB_PORT:-6080})
+  --mapping       Launch sensor exploration and persistent 2D/2.5D mapping stack
+  --multi         Launch 3-robot fleet simulation and control station (khepera_1, khepera_2, khepera_3)
   --build         Build or rebuild the Docker container image
   --config        Re-run interactive mode setup and update .env
   --help, -h      Display this help message
 
 Examples:
   ./run.sh                                    Launch default configured mode
+  ./run.sh --mapping                          Launch sensor exploration and mapping
+  ./run.sh --multi                            Launch 3-robot swarm fleet station
   ./run.sh --web                              Launch browser-based simulation
   ./run.sh --native                           Launch native X11/Wayland GUI
   ./run.sh --build                            Rebuild Docker image
@@ -80,6 +84,8 @@ EOF
 CLI_MODE=""
 DO_BUILD=false
 DO_CONFIG=false
+DO_MULTI=false
+DO_MAPPING=false
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -90,6 +96,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --web)
             CLI_MODE="web"
+            shift
+            ;;
+        --multi)
+            DO_MULTI=true
+            shift
+            ;;
+        --mapping)
+            DO_MAPPING=true
             shift
             ;;
         --build)
@@ -110,6 +124,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$DO_MULTI" = true ] && [ ${#EXTRA_ARGS[@]} -eq 0 ]; then
+    EXTRA_ARGS=("ros2" "launch" "khepera4_control" "multi_robot_station.launch.py")
+fi
+
+if [ "$DO_MAPPING" = true ] && [ ${#EXTRA_ARGS[@]} -eq 0 ]; then
+    EXTRA_ARGS=("ros2" "launch" "khepera4_control" "mapping.launch.py")
+fi
 
 # 2. Check for first boot or explicit reconfiguration
 if [ ! -f "${ENV_FILE}" ] || [ "$DO_CONFIG" = true ]; then
@@ -152,7 +174,11 @@ fi
 # 4. Determine execution mode
 TARGET_MODE="${CLI_MODE:-${KHEPERA_DEFAULT_MODE:-native}}"
 
-# 5. Launch according to mode
+# 5. Clean up any orphaned containers or stale Gazebo servers to prevent ghost models
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
+pkill -f "gz sim" >/dev/null 2>&1 || true
+
+# 6. Launch according to mode
 if [ "$TARGET_MODE" = "native" ]; then
     echo "=================================================================="
     echo " Starting Khepera IV in Native GUI Mode (WSLg / GPU Pass-through)"

@@ -23,10 +23,19 @@
         <mesh filename="package://khepera4_description/meshes/khepera4_chassis.obj" scale="1.0 1.0 1.0"/>
       </geometry>
     </visual>
+    <!-- Two-tier collision geometry: elevated upper bumper and recessed lower underbody -->
+    <!-- Upper collision: full 70mm radius bumper against walls/obstacles, elevated bottom at z = 0.014m -->
     <collision>
-      <origin xyz="0 0 0.0314" rpy="0 0 0"/>
+      <origin xyz="0 0 0.036" rpy="0 0 0"/>
       <geometry>
-        <cylinder radius="0.070" length="0.0538"/>
+        <cylinder radius="0.070" length="0.044"/>
+      </geometry>
+    </collision>
+    <!-- Lower collision: recessed 50mm radius inside front caster (x = 50.5mm), bottom at z = 0.0045m -->
+    <collision>
+      <origin xyz="0 0 0.00925" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.050" length="0.0095"/>
       </geometry>
     </collision>
   </link>
@@ -212,10 +221,22 @@
   <gazebo reference="front_caster">
     <mu1>0.0001</mu1>
     <mu2>0.0001</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.0005</minDepth>
+    <maxVel>0.1</maxVel>
   </gazebo>
   <gazebo reference="rear_caster">
     <mu1>0.0001</mu1>
     <mu2>0.0001</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.0005</minDepth>
+    <maxVel>0.1</maxVel>
+  </gazebo>
+  <gazebo reference="base_link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
   </gazebo>
   <gazebo reference="left_wheel">
     <mu1>1.0</mu1>
@@ -254,6 +275,202 @@
       <always_on>1</always_on>
       <update_rate>100</update_rate>
       <topic>/imu/data</topic>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (5 Ultrasonic Transducers: 0.25m - 2.0m)       -->
+  <!-- ==================================================================== -->
+  <gazebo reference="us_0_link">
+    <sensor name="khepera4_us_0" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/khepera4/us_0/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_1_link">
+    <sensor name="khepera4_us_1" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/khepera4/us_1/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_2_link">
+    <sensor name="khepera4_us_2" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/khepera4/us_2/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_3_link">
+    <sensor name="khepera4_us_3" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/khepera4/us_3/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_4_link">
+    <sensor name="khepera4_us_4" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/khepera4/us_4/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (8 IR Proximity Transducers: 0.002m - 0.25m)   -->
+  <!-- ==================================================================== -->
+  <gazebo reference="ir_0_link">
+    <sensor name="khepera4_ir_0" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_0/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_1_link">
+    <sensor name="khepera4_ir_1" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_1/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_2_link">
+    <sensor name="khepera4_ir_2" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_2/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_3_link">
+    <sensor name="khepera4_ir_3" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_3/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_4_link">
+    <sensor name="khepera4_ir_4" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_4/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_5_link">
+    <sensor name="khepera4_ir_5" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_5/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_6_link">
+    <sensor name="khepera4_ir_6" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_6/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_7_link">
+    <sensor name="khepera4_ir_7" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ir_7/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (4 Ground IR Sensors: Cliff / Surface)        -->
+  <!-- ==================================================================== -->
+  <gazebo reference="ground_ir_0_link">
+    <sensor name="khepera4_ground_ir_0" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ground_ir_0/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ground_ir_1_link">
+    <sensor name="khepera4_ground_ir_1" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ground_ir_1/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ground_ir_2_link">
+    <sensor name="khepera4_ground_ir_2" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ground_ir_2/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ground_ir_3_link">
+    <sensor name="khepera4_ground_ir_3" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/khepera4/ground_ir_3/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
     </sensor>
   </gazebo>
 

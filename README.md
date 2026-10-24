@@ -67,18 +67,29 @@ The simulation leverages bidirectional communication between ROS 2 Jazzy and Gaz
 |                ^                                    |  DiffDrive System Plugin    |   |
 |                |                                    |  JointStatePublisher Plugin |   |
 |   +--------------------------+                      |  DART Physics Engine        |   |
-|   |    control_dashboard     |                      +-----------------------------+   |
-|   |  (Qt Real-Time Telemetry)|                                     |                  |
-|   +--------------------------+                                     | gz.msgs.Odometry |
-|                                                                    v gz.msgs.Image    |
-|   Topics Bridged:                                                  v gz.msgs.IMU      |
-|   - /clock              [rosgraph_msgs/msg/Clock] <---------------+                   |
-|   - /cmd_vel            [geometry_msgs/msg/Twist]                                     |
-|   - /odom               [nav_msgs/msg/Odometry]  <----------------+                   |
-|   - /joint_states       [sensor_msgs/msg/JointState] <------------+                   |
-|   - /camera/image_raw   [sensor_msgs/msg/Image]  <----------------+                   |
-|   - /imu/data           [sensor_msgs/msg/Imu]    <----------------+                   |
-|   - /tf                 [tf2_msgs/msg/TFMessage] <----------------+                   |
+|   +--------------------------+                      |  Sensors Plugin (Ogre2)     |   |
+|   |    control_dashboard     |                      |  DART Physics Engine        |   |
+|   |  (Qt Real-Time Telemetry)|                      +-----------------------------+   |
+|   +--------------------------+                                     |                  |
+|                ^                                                   | gz.msgs.Odometry |
+|                |                                                   | gz.msgs.Image    |
+|   +--------------------------+                                     | gz.msgs.IMU      |
+|   |     khepera4_mapper      | <-----------------------------------+ gz.msgs.LaserScan|
+|   | (Occupancy / Elevation / |                                     v                  |
+|   |   Surface / Persistence) |                                                        |
+|   +--------------------------+                                                        |
+|                                                                                       |
+|   Topics Bridged:                                                                     |
+|   - /clock                      [rosgraph_msgs/msg/Clock] <-------+                   |
+|   - /cmd_vel                    [geometry_msgs/msg/Twist]                             |
+|   - /odom                       [nav_msgs/msg/Odometry]   <-------+                   |
+|   - /joint_states               [sensor_msgs/msg/JointState] <----+                   |
+|   - /camera/image_raw           [sensor_msgs/msg/Image]   <-------+                   |
+|   - /imu/data                   [sensor_msgs/msg/Imu]     <-------+                   |
+|   - /tf                         [tf2_msgs/msg/TFMessage]  <-------+                   |
+|   - /khepera4/us_0..4/scan      [sensor_msgs/msg/LaserScan] (5 Sonar Transducers) <---+
+|   - /khepera4/ir_0..7/scan      [sensor_msgs/msg/LaserScan] (8 IR Proximity Sensors) <+
+|   - /khepera4/ground_ir_0..3/scan [sensor_msgs/msg/LaserScan] (4 Cliff/Line Sensors) <+
 +---------------------------------------------------------------------------------------+
 ```
 
@@ -128,17 +139,28 @@ BRT K4 is engineered as an extensible modular robotics platform designed for par
   - URDF extension point via `<xacro:include filename="khepera4_arm.xacro" />`.
   - Joint trajectory controller integration bridging MoveIt 2 with the mobile base.
 
-### 3. Swarm Team (Multi-Robot Namespace Support)
-- **Decentralized Multi-Robot Architecture:**
-  - Configurable ROS 2 namespaces (e.g., `/k4_01`, `/k4_02`, `/k4_leader`, `/k4_follower_1`).
+### 3. Swarm Fleet Team (3-Robot Multi-Agent Architecture)
+- **Dedicated 3-Robot Fleet Architecture:**
+  - Standardized multi-robot roles with isolated namespaces and TF coordinate trees:
+    - **`khepera_1` (`base_link`):** Base anchor, coordinator, and origin reference frame.
+    - **`khepera_2` (`extender`):** Dynamic chain relay tracking the midpoint between Base and Explorer to maintain Wi-Fi connectivity.
+    - **`khepera_3` (`explorer`):** Autonomous scout exploring the frontier under tether range constraints.
   - Isolated topic trees:
-    - `/<robot_ns>/cmd_vel`
-    - `/<robot_ns>/odom`
-    - `/<robot_ns>/camera/image_raw`
-    - `/<robot_ns>/imu/data`
-- **TF Prefixing & Coordinate Isolation:**
-  - Frames mapped dynamically: `<robot_ns>/odom` $\to$ `<robot_ns>/base_footprint` $\to$ `<robot_ns>/base_link`.
-- **Swarm Operations:** Multi-robot spawner launch file ready for decentralized consensus algorithms, flocking behavior, and virtual-structure formation tracking.
+    - `/<robot_name>/cmd_vel` (`geometry_msgs/msg/Twist`)
+    - `/<robot_name>/odom` (`nav_msgs/msg/Odometry`)
+    - `/<robot_name>/joint_states` (`sensor_msgs/msg/JointState`)
+    - `/<robot_name>/camera/image_raw` (`sensor_msgs/msg/Image`)
+    - `/<robot_name>/imu/data` (`sensor_msgs/msg/Imu`)
+    - `/<robot_name>/battery_state` (`sensor_msgs/msg/BatteryState`)
+  - **TF Prefixing & Global Registration:**
+    - Each robot publishes scoped frames: `<robot_name>/odom` $\to$ `<robot_name>/base_footprint` $\to$ `<robot_name>/base_link` $\to$ `<robot_name>/<role>`.
+    - All 3 robots register into the unified global `world` frame for simultaneous multi-robot tracking in RViz2 and Gazebo.
+  - **Single Command Launch:**
+    ```bash
+    ./run.sh --multi          # Launch 3-robot Gazebo sim + coordinator + dashboard
+    ./run.sh --multi --web    # Launch 3-robot stack in HTML5 web browser
+    ```
+  - **Comprehensive Operations Manual:** Full hardware and simulation deployment instructions are documented in [`MULTI_ROBOT_MANUAL.md`](MULTI_ROBOT_MANUAL.md).
 
 ### 4. Neural Network / AI Team (Standardized AI Interfaces)
 - **Observation Space (Standard ROS 2 Topics):**
@@ -153,6 +175,30 @@ BRT K4 is engineered as an extensible modular robotics platform designed for par
 - **Action Space:**
   - Standard velocity control: `geometry_msgs/msg/Twist` on `/cmd_vel` ($v \in [-0.25, 0.25]\text{ m/s}$, $\omega \in [-1.8, 1.8]\text{ rad/s}$).
 - **AI Framework Compatibility:** Drop-in compatibility with Gymnasium environments, PyTorch reinforcement learning pipelines (PPO, SAC), Isaac Lab bridges, and Vision-Language-Action (VLA) navigation models.
+
+### 5. Multi-Sensor Perception & Autonomous Mapping Engine
+- **Full Physical Sensor Suite Virtualization:**
+  - **8 IR Ring Sensors:** High-resolution close-proximity detection ($0.002\text{ m} - 0.25\text{ m}$) configured around the blue chassis bumper at $45^\circ$ angular intervals.
+  - **5 Ultrasonic Sonar Transceivers:** Medium-range acoustic ranging ($0.20\text{ m} - 2.0\text{ m}$) covering front and lateral sectors ($-90^\circ, -45^\circ, 0^\circ, +45^\circ, +90^\circ$).
+  - **4 Underbody Ground IR Sensors:** Downward-looking proximity ($0.001\text{ m} - 0.06\text{ m}$) for table edge / cliff detection ($d > 0.025\text{ m}$) and floor surface tracking.
+  - **6-DOF IMU:** High-frequency linear acceleration and gyro angular rates on `imu_link`.
+- **Fused 360° Virtual LaserScan (`/khepera4/scan`):**
+  - Seamlessly combines the 8 IR and 5 Ultrasonic beams into a 360-sample radial scan with exact kinematic offsets.
+- **Probabilistic 2D Occupancy Grid (`/map`):**
+  - High-performance Bresenham 2D ray casting with log-odds belief updates ($l_{free} = 0.40, l_{occ} = 0.85$, $0.03\text{ m}$ resolution, $200 \times 200$ cells).
+- **2.5D Terrain Elevation & Inclination Map (`/elevation_map`):**
+  - Dynamically computes robot pitch and roll angles from the IMU gravity vector, mapping slopes and ramps across traversed cells.
+- **Surface & Cliff Hazard Map (`/surface_map`, `/cliff_alert`):**
+  - Detects floor drop-offs and pits, triggering emergency stop/backup maneuvers, while evaluating vertical vibration variance ($\sigma(a_z)$) for terrain roughness.
+- **Persistent Map Memory:**
+  - Supports on-demand and automatic map persistence: exports standard ROS `khepera_map.pgm` + `khepera_map.yaml` and high-resolution colored visualization `khepera_map.png` via `/save_map`, with `/load_map` and `/clear_map` services.
+- **Autonomous Reactive Explorer (`reactive_explorer`):**
+  - Braitenberg potential-field obstacle avoidance, harmonic wander steering, and cliff safety rollback.
+- **Single Command Launch:**
+  ```bash
+  ./run.sh --mapping          # Launch simulation + mapping engine + dashboard
+  ros2 launch khepera4_control mapping.launch.py auto_explore:=true rviz:=true
+  ```
 
 ---
 
@@ -182,6 +228,8 @@ Select [1-2]:
 #### Command-Line Flags
 You can bypass prompts or override default settings anytime using CLI flags:
 ```bash
+./run.sh --mapping  # Launch Multi-Sensor Exploration & Persistent 2D/2.5D Mapping
+./run.sh --multi    # Launch 3-robot swarm fleet simulation and control station
 ./run.sh --native   # Launch directly in Native GUI mode (WSLg / X11 GPU)
 ./run.sh --web      # Launch directly in Web Browser mode (noVNC)
 ./run.sh --build    # Rebuild Docker container images
@@ -310,10 +358,20 @@ The identical control software developed in this repository deploys onto the phy
 +-----------------------------------+                        +----------------------------------+
 ```
 
-- **Zero-Code Sim-to-Real Portability:** The high-level ROS 2 controller node publishes standard `/cmd_vel` (`Twist`) and subscribes to `/odom` (`Odometry`). The simulation and physical hardware expose identical ROS 2 message signatures.
-- **Embedded Abstraction:** The Khepera IV onboard Linux computer runs a lightweight hardware daemon communicating with low-level motor drivers via `libkhepera`. The offboard ROS 2 bridge translates `/cmd_vel` velocities $(v, \omega)$ into individual wheel motor ticks via inverse kinematics:
-  $$\omega_R = \frac{v + \frac{L}{2}\omega}{r}, \quad \omega_L = \frac{v - \frac{L}{2}\omega}{r}$$
-- **Sim-to-Real Compensation:** Closed-loop outer regulation with Lyapunov polar error compensation actively rejects real-world floor wheel slip, mechanical deadband, and motor battery voltage decay.
+- **Zero-Code Sim-to-Real Portability:** The high-level ROS 2 controller node publishes standard `/<robot_name>/cmd_vel` (`Twist`) and subscribes to `/<robot_name>/odom` (`Odometry`). The simulation and physical hardware expose identical ROS 2 message signatures.
+- **Embedded C Daemon (`khepera4_tcp_server.c`):** Runs onboard each robot's Gumstix Overo computer (Yocto Linux 1.8+), directly interacting with dsPIC33 via `libkhepera`. Implements the official K-Team ASCII command set (`D`, `R`, `N`, `G`, `V`, `B`, `Z`) alongside a fail-safe 500ms safety watchdog.
+- **Master PC Fleet Manager (`fleet_manager.sh`):**
+  ```bash
+  ./physical_robot/fleet_manager.sh ping      # Ping and test network latency to all 3 robots
+  ./physical_robot/fleet_manager.sh deploy    # Automatically compile & deploy daemon to robots
+  ./physical_robot/fleet_manager.sh start     # Start daemon on all 3 robots
+  ./physical_robot/fleet_manager.sh status    # Check daemon and battery status
+  ```
+- **Master PC ROS 2 Bridge Launch:**
+  ```bash
+  ros2 launch khepera4_control multi_robot_station.launch.py mode:=physical
+  ```
+- **Sim-to-Real Compensation:** Closed-loop outer regulation with Lyapunov polar error compensation actively rejects real-world floor wheel slip, mechanical deadband, and motor battery voltage decay. Detailed hardware operations are documented in [`MULTI_ROBOT_MANUAL.md`](MULTI_ROBOT_MANUAL.md).
 
 ---
 
@@ -333,31 +391,46 @@ khepera4_ws/
 │   ├── simulator.js                 # 2D unicycle kinematics & Laplace synthesizer
 │   ├── style.css                    # UI styles & dark mode theme
 │   └── README.md                    # Educational guide documentation
+├── physical_robot/                  # Physical Khepera IV Hardware & Fleet Tools
+│   ├── fleet_manager.sh             # Master PC fleet utility (ping, deploy, start, stream)
+│   └── onboard_daemon/              # Embedded daemon running on physical robots
+│       ├── khepera4_tcp_server.c    # C socket server implementing K-Team protocol & watchdog
+│       ├── Makefile                 # Native Khepera IV & Poky cross-compilation Makefile
+│       └── khepera4_server.service  # Systemd autostart unit file
 ├── src/
-│   ├── khepera4_control/            # ROS 2 Python Control & Telemetry Package
+│   ├── khepera4_control/            # ROS 2 Python Control, Hardware & Swarm Package
 │   │   ├── khepera4_control/
 │   │   │   ├── closed_loop_controller.py   # Lyapunov polar error closed-loop controller
-│   │   │   ├── dashboard.py                # Qt-based live control & telemetry station
+│   │   │   ├── dashboard.py                # Qt-based live control & multi-robot telemetry station
+│   │   │   ├── khepera4_hardware_bridge.py # Master PC TCP socket driver for physical robots
+│   │   │   ├── swarm_coordinator.py        # Swarm chain relay & formation coordinator
 │   │   │   ├── telemetry_logger.py         # CSV & metrics recorder for step responses
 │   │   │   ├── open_loop_benchmark.py      # Open-loop calibration routine
 │   │   │   └── common.py                   # Math utilities & coordinate transforms
 │   │   └── launch/
-│   │       ├── closed_loop.launch.py       # Controller execution launch
-│   │       ├── control_station.launch.py   # Simulation + dashboard station launch
-│   │       └── benchmark.launch.py         # Benchmark routine launch
+│   │       ├── multi_robot_station.launch.py   # Unified 3-robot launcher (sim or physical)
+│   │       ├── multi_robot_physical.launch.py  # 3-robot hardware bridge launch
+│   │       ├── multi_robot_control.launch.py   # 3-robot closed-loop controller launch
+│   │       ├── closed_loop.launch.py           # Single-robot controller execution launch
+│   │       ├── control_station.launch.py       # Single-robot simulation + dashboard launch
+│   │       └── benchmark.launch.py             # Benchmark routine launch
 │   └── khepera4_description/        # ROS 2 Gazebo Model Package
 │       ├── meshes/                  # 3D meshes (chassis, wheels, casters)
 │       ├── urdf/
+│       │   ├── khepera4.urdf.xacro  # Parameterized multi-robot Xacro model
 │       │   └── khepera4.urdf        # Complete kinematic, dynamic & sensor URDF
 │       ├── worlds/
 │       │   └── khepera4_world.sdf   # Gazebo Harmonic physics world
 │       └── launch/
-│           └── khepera4_sim.launch.py # Simulation + parameter bridge launch
-├── .env.example                     # Environment template with port configuration
+│           ├── khepera4_multi_sim.launch.py  # 3-robot Gazebo Harmonic simulation launch
+│           └── khepera4_sim.launch.py        # Single-robot simulation launch
+├── .env.example                     # Environment template with fleet IP configuration
 ├── .gitignore                       # Clean Git tracking configuration
 ├── khepera_iv_control_systems_research_charter.md # Academic control research paper charter
+├── Khepera IV User Manual 3.x.pdf   # Official K-Team hardware & software manual
+├── MULTI_ROBOT_MANUAL.md            # Comprehensive multi-robot fleet & hardware operations guide
 ├── README.md                        # Project documentation (this file)
-└── run.sh                           # Interactive multi-modal simulation launcher
+└── run.sh                           # Interactive multi-modal launcher (with --multi support)
 ```
 
 ---

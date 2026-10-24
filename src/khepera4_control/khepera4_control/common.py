@@ -39,3 +39,22 @@ def normalize_angle(angle: float) -> float:
     while angle < -math.pi:
         angle += 2.0 * math.pi
     return angle
+
+
+def quaternion_from_euler(roll: float, pitch: float, yaw: float) -> Tuple[float, float, float, float]:
+    """
+    Convert euler angles (roll, pitch, yaw in radians) into a quaternion (x, y, z, w).
+    """
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+
+    return qx, qy, qz, qw

@@ -41,3 +41,6 @@ ENV/
 telemetry/
 *.csv
 *.bag
+
+# Agents created by antigravity
+.agents/

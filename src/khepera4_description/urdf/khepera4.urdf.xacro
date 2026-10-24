@@ -1,0 +1,582 @@
+<?xml version="1.0"?>
+<robot name="khepera4" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- ==================================================================== -->
+  <!-- Arguments for Multi-Robot & Modular Parametrization                  -->
+  <!-- ==================================================================== -->
+  <xacro:arg name="robot_name" default="khepera4"/>
+  <xacro:arg name="role" default="base_link"/>
+  <xacro:arg name="color_rgb" default="0.10 0.45 0.90"/>
+  <xacro:arg name="badge_label" default="BASE"/>
+
+  <!-- ==================================================================== -->
+  <!-- Base Footprint: Projected 2D ground contact frame (Z = 0)             -->
+  <!-- ==================================================================== -->
+  <link name="base_footprint"/>
+
+  <!-- ==================================================================== -->
+  <!-- Base Link: Cylindrical Chassis with Blue Bumper & White Upper Shell   -->
+  <!-- Dimensions: D = 140 mm, Body Height = 53.8 mm, Clearance = 4.5 mm    -->
+  <!-- ==================================================================== -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
+      <mass value="0.460"/>
+      <!-- Solid cylinder inertia: Izz = 0.5*m*r^2, Ixx = Iyy = (1/12)*m*(3r^2 + h^2) -->
+      <inertia ixx="0.000693" ixy="0" ixz="0" iyy="0.000693" iyz="0" izz="0.001127"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://khepera4_description/meshes/khepera4_chassis.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </visual>
+    <!-- Two-tier collision geometry: elevated upper bumper and recessed lower underbody -->
+    <!-- Upper collision: full 70mm radius bumper against walls/obstacles, elevated bottom at z = 0.014m -->
+    <collision>
+      <origin xyz="0 0 0.036" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.070" length="0.044"/>
+      </geometry>
+    </collision>
+    <!-- Lower collision: recessed 50mm radius inside front caster (x = 50.5mm), bottom at z = 0.0045m -->
+    <collision>
+      <origin xyz="0 0 0.00925" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.050" length="0.0095"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================================================================== -->
+  <!-- Visual Identification Top Hat & Role Coordinate Frame                -->
+  <!-- Unconditional top hat badge on all robots (Cobalt Blue, Orange, Green)-->
+  <!-- Supports frames: khepera_1/base_link, khepera_2/extender, khepera_3/explorer -->
+  <!-- ==================================================================== -->
+  <link name="top_hat">
+    <inertial>
+      <mass value="0.008"/>
+      <origin xyz="0 0 0.012" rpy="0 0 0"/>
+      <inertia ixx="0.000002" ixy="0" ixz="0" iyy="0.000002" iyz="0" izz="0.000003"/>
+    </inertial>
+    <!-- Hat Brim (Wide base) -->
+    <visual name="hat_brim">
+      <origin xyz="0 0 0.002" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.036" length="0.004"/>
+      </geometry>
+      <material name="hat_mat_$(arg role)">
+        <color rgba="$(arg color_rgb) 1.0"/>
+      </material>
+    </visual>
+    <!-- Hat Crown (Tall cylindrical top) -->
+    <visual name="hat_crown">
+      <origin xyz="0 0 0.014" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.024" length="0.020"/>
+      </geometry>
+      <material name="hat_mat_$(arg role)">
+        <color rgba="$(arg color_rgb) 1.0"/>
+      </material>
+    </visual>
+    <!-- Hat Band (White decorative ring around crown) -->
+    <visual name="hat_band">
+      <origin xyz="0 0 0.006" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.025" length="0.004"/>
+      </geometry>
+      <material name="hat_band_mat">
+        <color rgba="1.0 1.0 1.0 0.95"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="top_hat_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="top_hat"/>
+    <origin xyz="0 0 0.0538" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="top_hat">
+    <visual>
+      <material>
+        <ambient>$(arg color_rgb) 1.0</ambient>
+        <diffuse>$(arg color_rgb) 1.0</diffuse>
+        <specular>0.8 0.8 0.8 1.0</specular>
+        <emissive>$(arg color_rgb) 0.6</emissive>
+      </material>
+    </visual>
+  </gazebo>
+
+  <xacro:property name="role_val" value="$(arg role)"/>
+  <xacro:if value="${role_val != 'base_link'}">
+    <link name="$(arg role)"/>
+    <joint name="$(arg role)_joint" type="fixed">
+      <parent link="top_hat"/>
+      <child link="$(arg role)"/>
+      <origin xyz="0 0 0.024" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+
+  <!-- ==================================================================== -->
+  <!-- Left Wheel (r = 0.021m, track gauge L = 0.1054m -> Y = +0.0527m)     -->
+  <!-- ==================================================================== -->
+  <link name="left_wheel">
+    <inertial>
+      <origin xyz="0 0 0" rpy="1.570796 0 0"/>
+      <mass value="0.035"/>
+      <inertia ixx="0.0000039" ixy="0" ixz="0" iyy="0.0000039" iyz="0" izz="0.0000077"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://khepera4_description/meshes/khepera4_wheel.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+      <geometry>
+        <cylinder radius="0.021" length="0.004"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel"/>
+    <origin xyz="0 0.0527 0.021" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ==================================================================== -->
+  <!-- Right Wheel (r = 0.021m, track gauge L = 0.1054m -> Y = -0.0527m)    -->
+  <!-- ==================================================================== -->
+  <link name="right_wheel">
+    <inertial>
+      <origin xyz="0 0 0" rpy="1.570796 0 0"/>
+      <mass value="0.035"/>
+      <inertia ixx="0.0000039" ixy="0" ixz="0" iyy="0.0000039" iyz="0" izz="0.0000077"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://khepera4_description/meshes/khepera4_wheel.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+      <geometry>
+        <cylinder radius="0.021" length="0.004"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel"/>
+    <origin xyz="0 -0.0527 0.021" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ==================================================================== -->
+  <!-- Passive Chrome Ball Casters (Front & Rear Support Spheres)           -->
+  <!-- ==================================================================== -->
+  <link name="front_caster">
+    <inertial>
+      <mass value="0.005"/>
+      <inertia ixx="0.0000001" ixy="0" ixz="0" iyy="0.0000001" iyz="0" izz="0.0000001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://khepera4_description/meshes/khepera4_caster.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.005"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="front_caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_caster"/>
+    <origin xyz="0.0505 0 0.005" rpy="0 0 0"/>
+  </joint>
+
+  <link name="rear_caster">
+    <inertial>
+      <mass value="0.005"/>
+      <inertia ixx="0.0000001" ixy="0" ixz="0" iyy="0.0000001" iyz="0" izz="0.0000001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://khepera4_description/meshes/khepera4_caster.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.005"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="rear_caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="rear_caster"/>
+    <origin xyz="-0.0505 0 0.005" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================================================================== -->
+  <!-- Sensors: CMOS Color Camera (Front WVGA 640x480, 60 deg HFOV)         -->
+  <!-- ==================================================================== -->
+  <link name="camera_link"/>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.0682 0 0.0283" rpy="0 0 0"/>
+  </joint>
+
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  </joint>
+
+  <!-- ==================================================================== -->
+  <!-- Sensors: 6-DOF IMU Sensor (Accelerometer + Gyroscope)                -->
+  <!-- ==================================================================== -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.021" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================================================================== -->
+  <!-- Ultrasonic Distance Sensor Frames (5 Sonar Transducers at Z = 45mm)  -->
+  <!-- ==================================================================== -->
+  <link name="us_0_link"/><joint name="us_0_joint" type="fixed"><parent link="base_link"/><child link="us_0_link"/><origin xyz="0 0.070 0.0458" rpy="0 0 1.570796"/></joint>
+  <link name="us_1_link"/><joint name="us_1_joint" type="fixed"><parent link="base_link"/><child link="us_1_link"/><origin xyz="0.0448 0.0454 0.0458" rpy="0 0 0.785398"/></joint>
+  <link name="us_2_link"/><joint name="us_2_joint" type="fixed"><parent link="base_link"/><child link="us_2_link"/><origin xyz="0.0636 0 0.0458" rpy="0 0 0"/></joint>
+  <link name="us_3_link"/><joint name="us_3_joint" type="fixed"><parent link="base_link"/><child link="us_3_link"/><origin xyz="0.0449 -0.0454 0.0458" rpy="0 0 -0.785398"/></joint>
+  <link name="us_4_link"/><joint name="us_4_joint" type="fixed"><parent link="base_link"/><child link="us_4_link"/><origin xyz="0 -0.070 0.0458" rpy="0 0 -1.570796"/></joint>
+
+  <!-- ==================================================================== -->
+  <!-- Infrared Ring Sensor Frames (8 Proximity Sensors in Blue Bumper)     -->
+  <!-- ==================================================================== -->
+  <link name="ir_0_link"/><joint name="ir_0_joint" type="fixed"><parent link="base_link"/><child link="ir_0_link"/><origin xyz="0.069 0.012 0.014" rpy="0 0 0.174"/></joint>
+  <link name="ir_1_link"/><joint name="ir_1_joint" type="fixed"><parent link="base_link"/><child link="ir_1_link"/><origin xyz="0.049 0.049 0.014" rpy="0 0 0.785"/></joint>
+  <link name="ir_2_link"/><joint name="ir_2_joint" type="fixed"><parent link="base_link"/><child link="ir_2_link"/><origin xyz="0 0.070 0.014" rpy="0 0 1.571"/></joint>
+  <link name="ir_3_link"/><joint name="ir_3_joint" type="fixed"><parent link="base_link"/><child link="ir_3_link"/><origin xyz="-0.049 0.049 0.014" rpy="0 0 2.356"/></joint>
+  <link name="ir_4_link"/><joint name="ir_4_joint" type="fixed"><parent link="base_link"/><child link="ir_4_link"/><origin xyz="-0.049 -0.049 0.014" rpy="0 0 -2.356"/></joint>
+  <link name="ir_5_link"/><joint name="ir_5_joint" type="fixed"><parent link="base_link"/><child link="ir_5_link"/><origin xyz="0 -0.070 0.014" rpy="0 0 -1.571"/></joint>
+  <link name="ir_6_link"/><joint name="ir_6_joint" type="fixed"><parent link="base_link"/><child link="ir_6_link"/><origin xyz="0.049 -0.049 0.014" rpy="0 0 -0.785"/></joint>
+  <link name="ir_7_link"/><joint name="ir_7_joint" type="fixed"><parent link="base_link"/><child link="ir_7_link"/><origin xyz="0.069 -0.012 0.014" rpy="0 0 -0.174"/></joint>
+
+  <!-- ==================================================================== -->
+  <!-- Underbody Ground Sensor Frames (4 Cliff/Line Sensors Facing Down)    -->
+  <!-- ==================================================================== -->
+  <link name="ground_ir_0_link"/><joint name="ground_ir_0_joint" type="fixed"><parent link="base_link"/><child link="ground_ir_0_link"/><origin xyz="0.061 0.020 0.005" rpy="0 1.570796 0"/></joint>
+  <link name="ground_ir_1_link"/><joint name="ground_ir_1_joint" type="fixed"><parent link="base_link"/><child link="ground_ir_1_link"/><origin xyz="0.064 0.009 0.005" rpy="0 1.570796 0"/></joint>
+  <link name="ground_ir_2_link"/><joint name="ground_ir_2_joint" type="fixed"><parent link="base_link"/><child link="ground_ir_2_link"/><origin xyz="0.064 -0.009 0.005" rpy="0 1.570796 0"/></joint>
+  <link name="ground_ir_3_link"/><joint name="ground_ir_3_joint" type="fixed"><parent link="base_link"/><child link="ground_ir_3_link"/><origin xyz="0.061 -0.020 0.005" rpy="0 1.570796 0"/></joint>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Physics & Friction Parameters                                 -->
+  <!-- ==================================================================== -->
+  <gazebo reference="front_caster">
+    <mu1>0.0001</mu1>
+    <mu2>0.0001</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.0005</minDepth>
+    <maxVel>0.1</maxVel>
+  </gazebo>
+  <gazebo reference="rear_caster">
+    <mu1>0.0001</mu1>
+    <mu2>0.0001</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.0005</minDepth>
+    <maxVel>0.1</maxVel>
+  </gazebo>
+  <gazebo reference="base_link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+  </gazebo>
+  <gazebo reference="left_wheel">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+  </gazebo>
+  <gazebo reference="right_wheel">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (Camera & IMU)                                 -->
+  <!-- ==================================================================== -->
+  <gazebo reference="camera_link">
+    <sensor name="$(arg robot_name)_camera" type="camera">
+      <always_on>1</always_on>
+      <update_rate>30</update_rate>
+      <camera>
+        <horizontal_fov>1.047198</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>10.0</far>
+        </clip>
+      </camera>
+      <topic>/$(arg robot_name)/camera/image_raw</topic>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="imu_link">
+    <sensor name="$(arg robot_name)_imu" type="imu">
+      <always_on>1</always_on>
+      <update_rate>100</update_rate>
+      <topic>/$(arg robot_name)/imu/data</topic>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (5 Ultrasonic Transducers: 0.25m - 2.0m)       -->
+  <!-- ==================================================================== -->
+  <gazebo reference="us_0_link">
+    <sensor name="$(arg robot_name)_us_0" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/$(arg robot_name)/us_0/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_1_link">
+    <sensor name="$(arg robot_name)_us_1" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/$(arg robot_name)/us_1/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_2_link">
+    <sensor name="$(arg robot_name)_us_2" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/$(arg robot_name)/us_2/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_3_link">
+    <sensor name="$(arg robot_name)_us_3" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/$(arg robot_name)/us_3/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="us_4_link">
+    <sensor name="$(arg robot_name)_us_4" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>10</update_rate>
+      <topic>/$(arg robot_name)/us_4/scan</topic>
+      <ray>
+        <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
+        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (8 IR Proximity Transducers: 0.002m - 0.25m)   -->
+  <!-- ==================================================================== -->
+  <gazebo reference="ir_0_link">
+    <sensor name="$(arg robot_name)_ir_0" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_0/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_1_link">
+    <sensor name="$(arg robot_name)_ir_1" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_1/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_2_link">
+    <sensor name="$(arg robot_name)_ir_2" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_2/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_3_link">
+    <sensor name="$(arg robot_name)_ir_3" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_3/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_4_link">
+    <sensor name="$(arg robot_name)_ir_4" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_4/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_5_link">
+    <sensor name="$(arg robot_name)_ir_5" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_5/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_6_link">
+    <sensor name="$(arg robot_name)_ir_6" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_6/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ir_7_link">
+    <sensor name="$(arg robot_name)_ir_7" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ir_7/scan</topic>
+      <ray>
+        <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.1309</min_angle><max_angle>0.1309</max_angle></horizontal></scan>
+        <range><min>0.002</min><max>0.25</max><resolution>0.001</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Sensor Systems (4 Ground IR Sensors: Cliff / Surface)        -->
+  <!-- ==================================================================== -->
+  <gazebo reference="ground_ir_0_link">
+    <sensor name="$(arg robot_name)_ground_ir_0" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ground_ir_0/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ground_ir_1_link">
+    <sensor name="$(arg robot_name)_ground_ir_1" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ground_ir_1/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ground_ir_2_link">
+    <sensor name="$(arg robot_name)_ground_ir_2" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ground_ir_2/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="ground_ir_3_link">
+    <sensor name="$(arg robot_name)_ground_ir_3" type="gpu_lidar">
+      <always_on>1</always_on><update_rate>20</update_rate>
+      <topic>/$(arg robot_name)/ground_ir_3/scan</topic>
+      <ray>
+        <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
+        <range><min>0.001</min><max>0.06</max><resolution>0.0005</resolution></range>
+      </ray>
+    </sensor>
+  </gazebo>
+
+  <!-- ==================================================================== -->
+  <!-- Gazebo Harmonic Actuator & Telemetry Plugins                        -->
+  <!-- Scoped per robot instance to prevent multi-robot topic collisions    -->
+  <!-- ==================================================================== -->
+  <gazebo>
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>left_wheel_joint</left_joint>
+      <right_joint>right_wheel_joint</right_joint>
+      <wheel_separation>0.1054</wheel_separation>
+      <wheel_radius>0.021</wheel_radius>
+      <max_linear_acceleration>2.0</max_linear_acceleration>
+      <min_linear_acceleration>-2.0</min_linear_acceleration>
+      <max_angular_acceleration>4.0</max_angular_acceleration>
+      <min_angular_acceleration>-4.0</min_angular_acceleration>
+      <topic>/$(arg robot_name)/cmd_vel</topic>
+      <odom_topic>/$(arg robot_name)/odom</odom_topic>
+      <frame_id>$(arg robot_name)/odom</frame_id>
+      <child_frame_id>$(arg robot_name)/base_footprint</child_frame_id>
+      <odom_publisher_frequency>50</odom_publisher_frequency>
+      <tf_topic>/tf</tf_topic>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+      <topic>/$(arg robot_name)/joint_states</topic>
+    </plugin>
+  </gazebo>
+
+</robot>

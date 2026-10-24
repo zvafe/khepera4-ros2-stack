@@ -1,0 +1,16 @@
+[Unit]
+Description=Khepera IV Embedded Hardware TCP Server Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/root
+ExecStart=/home/root/khepera4_tcp_server 5000
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

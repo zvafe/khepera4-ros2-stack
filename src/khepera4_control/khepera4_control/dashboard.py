@@ -2,7 +2,6 @@
 """
 Khepera IV Control Station & Educational Dashboard
 Course: Bazele Sistemelor Automate (BSA)
-Academic Lead: Prof. Ioan Dumitrache
 
 Interactive GUI providing:
 - Mode A: Manual Video Game Drive (WASD)
@@ -25,7 +24,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QSlider, QRadioButton,
     QButtonGroup, QGroupBox, QLineEdit, QSplitter, QFrame,
-    QTabWidget, QProgressBar, QDoubleSpinBox
+    QTabWidget, QProgressBar, QDoubleSpinBox, QComboBox, QCheckBox
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor, QPalette, QKeyEvent
@@ -33,11 +32,15 @@ from PyQt5.QtGui import QFont, QColor, QPalette, QKeyEvent
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+import numpy as np
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, OccupancyGrid
+from sensor_msgs.msg import LaserScan, Imu
+from std_msgs.msg import String, Bool
+from std_srvs.srv import Trigger, SetBool
 from khepera4_control.common import euler_from_quaternion, normalize_angle
 
 
@@ -107,35 +110,145 @@ class SmoothSpinBox(QDoubleSpinBox):
 # ==============================================================================
 # ROS 2 Worker Node
 # ==============================================================================
+# ==============================================================================
+# ROS 2 Worker Node (Multi-Robot Fleet & Swarm Aware)
+# ==============================================================================
 class RosWorker(QObject):
-    odom_received = pyqtSignal(float, float, float, float, float)  # x, y, yaw, v, w
+    odom_received = pyqtSignal(float, float, float, float, float)  # active robot: x, y, yaw, v, w
+    multi_odom_received = pyqtSignal(str, float, float, float, float, float)  # robot_name, x, y, yaw, v, w
+    swarm_status_received = pyqtSignal(str)
+    map_received = pyqtSignal(object)
+    elevation_received = pyqtSignal(object)
+    scan_received = pyqtSignal(object)
+    imu_received = pyqtSignal(float, float, float)  # pitch_deg, roll_deg, az
+    cliff_alert_received = pyqtSignal(bool)
+    map_feedback_received = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.node = None
         self.cmd_pub = None
+        self.cmd_pubs = {}
+        self.swarm_cmd_pub = None
+        self.save_map_cli = None
+        self.clear_map_cli = None
+        self.load_map_cli = None
+        self.toggle_exp_cli = None
+        self.set_exp_cli = None
         self.is_running = True
 
     def init_ros(self):
         if not rclpy.ok():
             rclpy.init()
         self.node = Node('khepera4_dashboard_node')
-        self.cmd_pub = self.node.create_publisher(Twist, '/cmd_vel', 10)
-        self.node.create_subscription(Odometry, '/odom', self._odom_cb, 10)
 
-    def _odom_cb(self, msg: Odometry):
+        # Publishers for robot namespaces
+        self.cmd_pub = self.node.create_publisher(Twist, '/cmd_vel', 10)
+        self.cmd_pubs['khepera_1'] = self.node.create_publisher(Twist, '/khepera_1/cmd_vel', 10)
+        self.cmd_pubs['khepera_2'] = self.node.create_publisher(Twist, '/khepera_2/cmd_vel', 10)
+        self.cmd_pubs['khepera_3'] = self.node.create_publisher(Twist, '/khepera_3/cmd_vel', 10)
+        self.swarm_cmd_pub = self.node.create_publisher(String, '/swarm/cmd', 10)
+
+        # Service clients for mapping and exploration
+        self.save_map_cli = self.node.create_client(Trigger, '/save_map')
+        self.clear_map_cli = self.node.create_client(Trigger, '/clear_map')
+        self.load_map_cli = self.node.create_client(Trigger, '/load_map')
+        self.toggle_exp_cli = self.node.create_client(Trigger, '/toggle_explorer')
+        self.set_exp_cli = self.node.create_client(SetBool, '/set_explorer')
+
+        # Subscriptions for 3-robot fleet odometry
+        self.node.create_subscription(Odometry, '/khepera_1/odom', lambda m: self._multi_odom_cb(m, 'khepera_1'), 10)
+        self.node.create_subscription(Odometry, '/khepera_2/odom', lambda m: self._multi_odom_cb(m, 'khepera_2'), 10)
+        self.node.create_subscription(Odometry, '/khepera_3/odom', lambda m: self._multi_odom_cb(m, 'khepera_3'), 10)
+        self.node.create_subscription(String, '/swarm/status', self._swarm_status_cb, 10)
+
+        # Sensor and Mapping Subscriptions
+        self.node.create_subscription(OccupancyGrid, '/map', lambda m: self.map_received.emit(m), 1)
+        self.node.create_subscription(OccupancyGrid, '/elevation_map', lambda m: self.elevation_received.emit(m), 1)
+        self.node.create_subscription(LaserScan, '/khepera4/scan', lambda m: self.scan_received.emit(m), 1)
+        self.node.create_subscription(Imu, '/imu/data', self._imu_cb, 1)
+        self.node.create_subscription(Bool, '/cliff_alert', lambda m: self.cliff_alert_received.emit(m.data), 1)
+
+    def _multi_odom_cb(self, msg: Odometry, name: str):
         pos = msg.pose.pose.position
         orient = msg.pose.pose.orientation
         twist = msg.twist.twist
         _, _, yaw = euler_from_quaternion(orient.x, orient.y, orient.z, orient.w)
-        self.odom_received.emit(pos.x, pos.y, yaw, twist.linear.x, twist.angular.z)
+        self.multi_odom_received.emit(name, pos.x, pos.y, yaw, twist.linear.x, twist.angular.z)
 
-    def publish_cmd(self, v: float, w: float):
-        if self.node and self.cmd_pub and self.node.context.ok():
+    def _swarm_status_cb(self, msg: String):
+        self.swarm_status_received.emit(msg.data)
+
+    def _imu_cb(self, msg: Imu):
+        orient = msg.orientation
+        roll, pitch, _ = euler_from_quaternion(orient.x, orient.y, orient.z, orient.w)
+        self.imu_received.emit(math.degrees(pitch), math.degrees(roll), msg.linear_acceleration.z)
+
+    def trigger_service(self, client, action_name: str):
+        import time
+        def _call():
+            if not client or not self.node or not self.node.context.ok():
+                return
+            if not client.wait_for_service(timeout_sec=1.5):
+                self.map_feedback_received.emit(f"⚠️ {action_name}: Service offline")
+                return
+            req = Trigger.Request()
+            future = client.call_async(req)
+            t0 = time.time()
+            while not future.done() and (time.time() - t0 < 3.0):
+                time.sleep(0.05)
+            if future.done():
+                try:
+                    res = future.result()
+                    self.map_feedback_received.emit(f"{'✅' if res.success else '⚠️'} {res.message}")
+                except Exception as e:
+                    self.map_feedback_received.emit(f"❌ Error: {e}")
+            else:
+                self.map_feedback_received.emit(f"⏱️ {action_name} timed out")
+        threading.Thread(target=_call, daemon=True).start()
+
+    def set_explorer_enabled(self, enabled: bool):
+        import time
+        def _call():
+            if not self.set_exp_cli or not self.node or not self.node.context.ok():
+                return
+            if not self.set_exp_cli.wait_for_service(timeout_sec=1.5):
+                self.map_feedback_received.emit("⚠️ Explorer service offline")
+                return
+            req = SetBool.Request()
+            req.data = bool(enabled)
+            future = self.set_exp_cli.call_async(req)
+            t0 = time.time()
+            while not future.done() and (time.time() - t0 < 3.0):
+                time.sleep(0.05)
+            if future.done():
+                try:
+                    res = future.result()
+                    self.map_feedback_received.emit(f"🤖 Explorer: {res.message}")
+                except Exception as e:
+                    self.map_feedback_received.emit(f"❌ Error: {e}")
+            else:
+                self.map_feedback_received.emit("⏱️ Explorer request timed out")
+        threading.Thread(target=_call, daemon=True).start()
+
+    def publish_cmd(self, v: float, w: float, target_robot: str = 'khepera_1'):
+        if self.node and self.node.context.ok():
             msg = Twist()
             msg.linear.x = float(v)
             msg.angular.z = float(w)
-            self.cmd_pub.publish(msg)
+            if target_robot == 'all':
+                for pub in self.cmd_pubs.values():
+                    pub.publish(msg)
+            elif target_robot in self.cmd_pubs:
+                self.cmd_pubs[target_robot].publish(msg)
+            else:
+                self.cmd_pub.publish(msg)
+
+    def publish_swarm_cmd(self, cmd_text: str):
+        if self.node and self.swarm_cmd_pub and self.node.context.ok():
+            msg = String()
+            msg.data = str(cmd_text)
+            self.swarm_cmd_pub.publish(msg)
 
     def spin(self):
         while self.is_running and rclpy.ok():
@@ -144,7 +257,7 @@ class RosWorker(QObject):
     def stop(self):
         self.is_running = False
         if self.node:
-            self.publish_cmd(0.0, 0.0)
+            self.publish_cmd(0.0, 0.0, target_robot='all')
 
 
 # ==============================================================================
@@ -202,8 +315,36 @@ class KheperaDashboard(QMainWindow):
         self.initial_target_dist = 0.0
         self.start_nav_pos = (0.0, 0.0)
 
-        # Connect ROS signal
-        self.ros.odom_received.connect(self.on_odom)
+        # Multi-Robot Fleet State
+        self.active_robot = 'khepera_1'
+        self.fleet = {
+            'khepera_1': {'role': 'base_link', 'color': '#2979ff', 'x': 0.0, 'y': 0.0, 'yaw': 0.0, 'v': 0.0, 'w': 0.0, 'spawn': (0.0, 0.0, 0.0), 'trail_x': [], 'trail_y': []},
+            'khepera_2': {'role': 'extender',  'color': '#ff9100', 'x': 0.6, 'y': 0.0, 'yaw': 0.0, 'v': 0.0, 'w': 0.0, 'spawn': (0.6, 0.0, 0.0), 'trail_x': [], 'trail_y': []},
+            'khepera_3': {'role': 'explorer',  'color': '#00e676', 'x': 1.2, 'y': 0.0, 'yaw': 0.0, 'v': 0.0, 'w': 0.0, 'spawn': (1.2, 0.0, 0.0), 'trail_x': [], 'trail_y': []},
+        }
+
+        # Multi-Sensor Mapping & Spatial Memory State
+        self.latest_map = None
+        self.latest_elevation = None
+        self.latest_scan = None
+        self.imu_pitch = 0.0
+        self.imu_roll = 0.0
+        self.imu_az = 9.81
+        self.is_cliff_alert = False
+        self.map_layer_mode = 'obstacles'
+        self.show_sensor_rays = True
+        self.is_auto_exploring = False
+        self.map_feedback_msg = "Map Engine: Ready"
+
+        # Connect ROS signals
+        self.ros.multi_odom_received.connect(self.on_multi_odom)
+        self.ros.swarm_status_received.connect(self.on_swarm_status)
+        self.ros.map_received.connect(self.on_map_received)
+        self.ros.elevation_received.connect(self.on_elevation_received)
+        self.ros.scan_received.connect(self.on_scan_received)
+        self.ros.imu_received.connect(self.on_imu_received)
+        self.ros.cliff_alert_received.connect(self.on_cliff_alert_received)
+        self.ros.map_feedback_received.connect(self.on_map_feedback_received)
 
         # UI Setup
         self.init_ui()
@@ -251,9 +392,15 @@ class KheperaDashboard(QMainWindow):
                 border-radius: 5px;
                 padding: 8px 14px;
                 font-weight: bold;
+                color: #f8fafc;
             }
             QPushButton:hover { background-color: #3b4559; border-color: #4da3ff; }
-            QPushButton:pressed { background-color: #1d6ed8; }
+            QPushButton:pressed {
+                background-color: #1d6ed8;
+                border-color: #93c5fd;
+                padding-top: 10px;
+                padding-bottom: 6px;
+            }
             QRadioButton { font-weight: bold; font-size: 13px; spacing: 8px; }
             QRadioButton::indicator { width: 16px; height: 16px; }
             QLineEdit {
@@ -339,13 +486,89 @@ class KheperaDashboard(QMainWindow):
         title_label.setStyleSheet("color: #ffffff;")
         header.addWidget(title_label)
 
-        header.addStretch()
-        charter_tag = QLabel("Course: Bazele Sistemelor Automate (BSA) | Academic Lead: Prof. I. Dumitrache")
-        charter_tag.setStyleSheet("color: #8f9ba8; font-size: 11px;")
-        header.addWidget(charter_tag)
-        main_layout.addLayout(header)
+        # 2. Multi-Robot Fleet & Swarm Operations Bar
+        fleet_bar = QHBoxLayout()
+        lbl_target = QLabel("🎯 Active Target Robot:")
+        lbl_target.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        lbl_target.setStyleSheet("color: #4da3ff;")
+        fleet_bar.addWidget(lbl_target)
 
-        # 2. Mode Selector Bar
+        self.combo_robot = QComboBox()
+        self.combo_robot.addItems([
+            "khepera_1 [base_link]",
+            "khepera_2 [extender]",
+            "khepera_3 [explorer]",
+            "All Robots (Broadcast)"
+        ])
+        self.combo_robot.setStyleSheet("""
+            QComboBox {
+                background-color: #242933;
+                border: 2px solid #4da3ff;
+                border-radius: 5px;
+                padding: 4px 10px;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 12px;
+                min-width: 190px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1e222b;
+                selection-background-color: #4da3ff;
+                color: #ffffff;
+            }
+        """)
+        self.combo_robot.currentIndexChanged.connect(self.on_active_robot_changed)
+        fleet_bar.addWidget(self.combo_robot)
+
+        fleet_bar.addSpacing(15)
+
+        # Swarm quick coordination buttons
+        btn_relay = QPushButton("🛰️ Chain Relay")
+        btn_relay.setToolTip("Extender positions dynamically as midpoint tether between Base and Explorer")
+        btn_relay.setStyleSheet("""
+            QPushButton { background-color: #1b4d3e; border: 1px solid #00e676; color: #00ffcc; border-radius: 5px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #246854; border-color: #69f0ae; }
+            QPushButton:pressed { background-color: #12382c; border-color: #a7f3d0; padding-top: 8px; padding-bottom: 4px; }
+        """)
+        btn_relay.clicked.connect(lambda: self.ros.publish_swarm_cmd("mode:relay"))
+        fleet_bar.addWidget(btn_relay)
+
+        btn_triangle = QPushButton("🔺 Triangle Formation")
+        btn_triangle.setStyleSheet("""
+            QPushButton { background-color: #3e2723; border: 1px solid #ff9100; color: #ffe082; border-radius: 5px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #5d3a34; border-color: #ffb74d; }
+            QPushButton:pressed { background-color: #2b1b18; border-color: #ffe082; padding-top: 8px; padding-bottom: 4px; }
+        """)
+        btn_triangle.clicked.connect(lambda: self.ros.publish_swarm_cmd("mode:triangle"))
+        fleet_bar.addWidget(btn_triangle)
+
+        btn_return = QPushButton("🏠 Return to Base")
+        btn_return.setStyleSheet("""
+            QPushButton { background-color: #1a237e; border: 1px solid #2979ff; color: #bbdefb; border-radius: 5px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #283593; border-color: #82b1ff; }
+            QPushButton:pressed { background-color: #121858; border-color: #bbdefb; padding-top: 8px; padding-bottom: 4px; }
+        """)
+        btn_return.clicked.connect(lambda: self.ros.publish_swarm_cmd("return_to_base"))
+        fleet_bar.addWidget(btn_return)
+
+        btn_halt = QPushButton("⏸️ Halt Swarm")
+        btn_halt.setStyleSheet("""
+            QPushButton { background-color: #b71c1c; border: 1px solid #ff5252; color: #ffffff; border-radius: 5px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #c62828; border-color: #ff8a80; }
+            QPushButton:pressed { background-color: #7f0000; border-color: #ffcdd2; padding-top: 8px; padding-bottom: 4px; }
+        """)
+        btn_halt.clicked.connect(lambda: self.ros.publish_swarm_cmd("halt"))
+        fleet_bar.addWidget(btn_halt)
+
+        fleet_bar.addStretch()
+
+        self.lbl_tether_status = QLabel("Tether: Base <-> Extender <-> Explorer Active")
+        self.lbl_tether_status.setStyleSheet("color: #00e676; font-size: 11px; font-weight: bold;")
+        fleet_bar.addWidget(self.lbl_tether_status)
+
+        main_layout.addLayout(fleet_bar)
+
+        # 3. Mode Selector Bar
         mode_box = QGroupBox("Select Driving Mode")
         mode_layout = QHBoxLayout(mode_box)
         mode_layout.setSpacing(20)
@@ -573,11 +796,19 @@ class KheperaDashboard(QMainWindow):
         # Action Buttons
         act_layout = QHBoxLayout()
         self.btn_exec_b = QPushButton("▶ Execute Step Setpoint")
-        self.btn_exec_b.setStyleSheet("background-color: #00897b; color: white;")
+        self.btn_exec_b.setStyleSheet("""
+            QPushButton { background-color: #00897b; border: 1px solid #26a69a; color: white; border-radius: 5px; padding: 8px 14px; font-weight: bold; }
+            QPushButton:hover { background-color: #009688; border-color: #80cbc4; }
+            QPushButton:pressed { background-color: #004d40; border-color: #b2dfdb; padding-top: 10px; padding-bottom: 6px; }
+        """)
         self.btn_exec_b.clicked.connect(self.start_mode_b_nav)
 
         self.btn_stop_b = QPushButton("⏹ Stop / Abort")
-        self.btn_stop_b.setStyleSheet("background-color: #d32f2f; color: white;")
+        self.btn_stop_b.setStyleSheet("""
+            QPushButton { background-color: #d32f2f; border: 1px solid #ef5350; color: white; border-radius: 5px; padding: 8px 14px; font-weight: bold; }
+            QPushButton:hover { background-color: #e53935; border-color: #e57373; }
+            QPushButton:pressed { background-color: #b71c1c; border-color: #ffcdd2; padding-top: 10px; padding-bottom: 6px; }
+        """)
         self.btn_stop_b.clicked.connect(self.stop_navigation)
 
         act_layout.addWidget(self.btn_exec_b)
@@ -615,11 +846,19 @@ class KheperaDashboard(QMainWindow):
 
         act_c = QHBoxLayout()
         self.btn_start_c = QPushButton("▶ Start Trajectory")
-        self.btn_start_c.setStyleSheet("background-color: #1565c0; color: white;")
+        self.btn_start_c.setStyleSheet("""
+            QPushButton { background-color: #1565c0; border: 1px solid #1e88e5; color: white; border-radius: 5px; padding: 8px 14px; font-weight: bold; }
+            QPushButton:hover { background-color: #1976d2; border-color: #64b5f6; }
+            QPushButton:pressed { background-color: #0d47a1; border-color: #bbdefb; padding-top: 10px; padding-bottom: 6px; }
+        """)
         self.btn_start_c.clicked.connect(self.start_mode_c_nav)
 
         self.btn_stop_c = QPushButton("⏹ Stop Trajectory")
-        self.btn_stop_c.setStyleSheet("background-color: #d32f2f; color: white;")
+        self.btn_stop_c.setStyleSheet("""
+            QPushButton { background-color: #d32f2f; border: 1px solid #ef5350; color: white; border-radius: 5px; padding: 8px 14px; font-weight: bold; }
+            QPushButton:hover { background-color: #e53935; border-color: #e57373; }
+            QPushButton:pressed { background-color: #b71c1c; border-color: #ffcdd2; padding-top: 10px; padding-bottom: 6px; }
+        """)
         self.btn_stop_c.clicked.connect(self.stop_navigation)
 
         act_c.addWidget(self.btn_start_c)
@@ -722,10 +961,107 @@ class KheperaDashboard(QMainWindow):
         return box
 
     def build_plot_box(self) -> QGroupBox:
-        box = QGroupBox("Real-Time Arena Mini-Map && Dynamic Error Curve")
+        box = QGroupBox("Real-Time Multi-Sensor Arena Map & Dynamic Step-Response Curves")
         layout = QVBoxLayout(box)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        # Embed Matplotlib Figure
+        # 1. Multi-Sensor & Attitude HUD Banner
+        hud_bar = QHBoxLayout()
+        hud_bar.setSpacing(12)
+
+        self.lbl_attitude = QLabel("📐 Pitch: 0.0° | Roll: 0.0° [Flat Floor]")
+        self.lbl_attitude.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px; background-color: #12161f; padding: 4px 8px; border-radius: 4px; border: 1px solid #2d3340;")
+        hud_bar.addWidget(self.lbl_attitude)
+
+        self.lbl_cliff = QLabel("🛡️ Cliff: SAFE")
+        self.lbl_cliff.setStyleSheet("color: #00e676; font-weight: bold; font-size: 11px; background-color: #12161f; padding: 4px 8px; border-radius: 4px; border: 1px solid #2d3340;")
+        hud_bar.addWidget(self.lbl_cliff)
+
+        self.lbl_map_toast = QLabel("💾 Map: Awaiting Scan")
+        self.lbl_map_toast.setStyleSheet("color: #ffd54f; font-weight: bold; font-size: 11px; background-color: #12161f; padding: 4px 8px; border-radius: 4px; border: 1px solid #2d3340;")
+        hud_bar.addWidget(self.lbl_map_toast)
+
+        hud_bar.addStretch()
+        layout.addLayout(hud_bar)
+
+        # 2. Interactive Mapping, Layers & Persistence Controls
+        ctrl_bar = QHBoxLayout()
+        ctrl_bar.setSpacing(8)
+
+        lbl_layer = QLabel("Layer:")
+        lbl_layer.setStyleSheet("color: #a4b3c6; font-size: 11px;")
+        ctrl_bar.addWidget(lbl_layer)
+
+        self.combo_map_layer = QComboBox()
+        self.combo_map_layer.addItems([
+            "🗺️ 2D Obstacle Map (/map)",
+            "🏔️ 2.5D Slope Map (/elevation_map)",
+            "🛰️ Fleet Trajectory Only"
+        ])
+        self.combo_map_layer.setStyleSheet("""
+            QComboBox {
+                background-color: #242933; border: 1px solid #4da3ff;
+                border-radius: 4px; padding: 2px 8px; color: #ffffff;
+                font-size: 11px; font-weight: bold;
+            }
+        """)
+        self.combo_map_layer.currentIndexChanged.connect(self.on_map_layer_changed)
+        ctrl_bar.addWidget(self.combo_map_layer)
+
+        self.chk_sensor_rays = QCheckBox("📡 Sensor Rays")
+        self.chk_sensor_rays.setChecked(True)
+        self.chk_sensor_rays.setStyleSheet("color: #4da3ff; font-weight: bold; font-size: 11px;")
+        self.chk_sensor_rays.toggled.connect(self.on_sensor_rays_toggled)
+        ctrl_bar.addWidget(self.chk_sensor_rays)
+
+        ctrl_bar.addSpacing(10)
+
+        # Autonomous Exploration Toggle Button
+        self.btn_auto_explore = QPushButton("🤖 Auto Explore")
+        self.btn_auto_explore.setToolTip("Toggle autonomous Braitenberg wandering and arena coverage")
+        self.btn_auto_explore.setStyleSheet("""
+            QPushButton { background-color: #2a3a52; border: 1px solid #4da3ff; color: #80d8ff; font-size: 11px; border-radius: 4px; padding: 4px 8px; font-weight: bold; }
+            QPushButton:hover { background-color: #3b4e6d; border-color: #82b1ff; }
+            QPushButton:pressed { background-color: #1a283a; border-color: #bbdefb; padding-top: 6px; padding-bottom: 2px; }
+        """)
+        self.btn_auto_explore.clicked.connect(self.on_toggle_auto_explore)
+        ctrl_bar.addWidget(self.btn_auto_explore)
+
+        # Map Persistence Buttons
+        self.btn_save_map = QPushButton("💾 Save Map")
+        self.btn_save_map.setToolTip("Persist current explored map to maps/khepera_map (.png, .pgm, .yaml)")
+        self.btn_save_map.setStyleSheet("""
+            QPushButton { background-color: #1b4d3e; border: 1px solid #00e676; color: #69f0ae; font-size: 11px; border-radius: 4px; padding: 4px 8px; font-weight: bold; }
+            QPushButton:hover { background-color: #246854; border-color: #b9f6ca; }
+            QPushButton:pressed { background-color: #12382c; border-color: #a7f3d0; padding-top: 6px; padding-bottom: 2px; }
+        """)
+        self.btn_save_map.clicked.connect(self.on_save_map_clicked)
+        ctrl_bar.addWidget(self.btn_save_map)
+
+        self.btn_load_map = QPushButton("📂 Load")
+        self.btn_load_map.setToolTip("Reload saved map from disk into robot memory")
+        self.btn_load_map.setStyleSheet("""
+            QPushButton { background-color: #2b3342; border: 1px solid #a4b3c6; color: #ffffff; font-size: 11px; border-radius: 4px; padding: 4px 8px; font-weight: bold; }
+            QPushButton:hover { background-color: #3c4659; border-color: #cfd8dc; }
+            QPushButton:pressed { background-color: #1a202c; border-color: #ffffff; padding-top: 6px; padding-bottom: 2px; }
+        """)
+        self.btn_load_map.clicked.connect(self.on_load_map_clicked)
+        ctrl_bar.addWidget(self.btn_load_map)
+
+        self.btn_clear_map = QPushButton("🔄 Clear")
+        self.btn_clear_map.setToolTip("Reset the exploration grid and memory")
+        self.btn_clear_map.setStyleSheet("""
+            QPushButton { background-color: #3e2723; border: 1px solid #ff9100; color: #ffab40; font-size: 11px; border-radius: 4px; padding: 4px 8px; font-weight: bold; }
+            QPushButton:hover { background-color: #5d3a34; border-color: #ffb74d; }
+            QPushButton:pressed { background-color: #2b1b18; border-color: #ffe082; padding-top: 6px; padding-bottom: 2px; }
+        """)
+        self.btn_clear_map.clicked.connect(self.on_clear_map_clicked)
+        ctrl_bar.addWidget(self.btn_clear_map)
+
+        layout.addLayout(ctrl_bar)
+
+        # 3. Embed Matplotlib Figure Canvas
         self.figure = Figure(figsize=(7, 4), facecolor='#16191f')
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
@@ -746,6 +1082,13 @@ class KheperaDashboard(QMainWindow):
         self.mode_panel_a.setVisible(mode == 'A')
         self.mode_panel_b.setVisible(mode == 'B')
         self.mode_panel_c.setVisible(mode == 'C')
+
+        if mode == 'A':
+            # Option A: Full manual pilot control. Halt autonomous swarm behaviors
+            # so the user can freely position khepera_2 or any other robot without tether fighting!
+            self.ros.publish_swarm_cmd("halt")
+            self.lbl_tether_status.setText("Swarm: MANUAL / WASD Mode (Full Pilot Control)")
+            self.lbl_tether_status.setStyleSheet("color: #80d8ff; font-size: 11px; font-weight: bold;")
 
         if mode == 'B':
             try:
@@ -770,6 +1113,9 @@ class KheperaDashboard(QMainWindow):
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         if key in (Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D, Qt.Key_Space):
+            if self.current_mode == 'A':
+                # Reassure manual control: halt autonomous coordinator so robot responds directly
+                self.ros.publish_swarm_cmd("halt")
             self.keys_pressed.add(key)
             self.update_key_labels()
         super().keyPressEvent(event)
@@ -791,6 +1137,74 @@ class KheperaDashboard(QMainWindow):
         self.key_d_lbl.setStyleSheet(active_style if Qt.Key_D in self.keys_pressed else idle_style)
 
     # --------------------------------------------------------------------------
+    # Multi-Robot Fleet & Swarm Handlers
+    # --------------------------------------------------------------------------
+    def on_active_robot_changed(self, idx: int):
+        mapping = {
+            0: 'khepera_1',
+            1: 'khepera_2',
+            2: 'khepera_3',
+            3: 'all'
+        }
+        self.active_robot = mapping.get(idx, 'khepera_1')
+        self.history_x.clear()
+        self.history_y.clear()
+        self.history_rho.clear()
+        self.history_time.clear()
+        self.nav_start_time = None
+        target_name = 'khepera_1' if self.active_robot == 'all' else self.active_robot
+        if target_name in self.fleet:
+            r = self.fleet[target_name]
+            self.on_odom(r['x'], r['y'], r['yaw'], r['v'], r['w'])
+
+    def on_multi_odom(self, name: str, x: float, y: float, yaw: float, v: float, w: float):
+        if name in self.fleet:
+            spawn = self.fleet[name].get('spawn', (0.0, 0.0, 0.0))
+            cos_s = math.cos(spawn[2])
+            sin_s = math.sin(spawn[2])
+            gx = spawn[0] + (x * cos_s - y * sin_s)
+            gy = spawn[1] + (x * sin_s + y * cos_s)
+            gyaw = normalize_angle(spawn[2] + yaw)
+
+            self.fleet[name]['x'] = gx
+            self.fleet[name]['y'] = gy
+            self.fleet[name]['yaw'] = gyaw
+            self.fleet[name]['v'] = v
+            self.fleet[name]['w'] = w
+            self.fleet[name]['trail_x'].append(gx)
+            self.fleet[name]['trail_y'].append(gy)
+            if len(self.fleet[name]['trail_x']) > 400:
+                self.fleet[name]['trail_x'].pop(0)
+                self.fleet[name]['trail_y'].pop(0)
+
+            # Update active robot representation ONLY if this odom is from active target robot
+            target_name = 'khepera_1' if self.active_robot == 'all' else self.active_robot
+            if name == target_name:
+                self.on_odom(gx, gy, gyaw, v, w)
+
+    def on_swarm_status(self, json_str: str):
+        try:
+            data = json.loads(json_str)
+            d12 = data.get('d_base_extender', 0.0)
+            d23 = data.get('d_extender_explorer', 0.0)
+            conn = data.get('chain_connected', True)
+            mode = data.get('mode', 'idle')
+            sig = data.get('chain_signal_pct', 100.0)
+            if mode == 'idle':
+                status_text = f"Swarm: MANUAL / STANDBY | d(1-2): {d12:.2f}m | d(2-3): {d23:.2f}m | Link: {sig:.0f}%"
+                color = "#80d8ff"
+            elif mode == 'relay':
+                status_text = f"Swarm: CHAIN RELAY ACTIVE | Tether: {sig:.0f}% | d(1-2): {d12:.2f}m | d(2-3): {d23:.2f}m"
+                color = "#00e676" if conn else "#ff5252"
+            else:
+                status_text = f"Swarm: {mode.upper()} | d(1-2): {d12:.2f}m | d(2-3): {d23:.2f}m"
+                color = "#00e676" if conn else "#ff5252"
+            self.lbl_tether_status.setText(status_text)
+            self.lbl_tether_status.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+        except Exception:
+            pass
+
+    # --------------------------------------------------------------------------
     # Odometry & Control Loops
     # --------------------------------------------------------------------------
     def on_odom(self, x: float, y: float, yaw: float, v: float, w: float):
@@ -802,12 +1216,13 @@ class KheperaDashboard(QMainWindow):
 
         # Update Brain Step 1
         deg_yaw = math.degrees(yaw)
+        active_role = "All (Broadcast)" if self.active_robot == 'all' else self.fleet.get(self.active_robot, {}).get('role', 'base_link')
         self.lbl_brain_state.setText(
+            f"Target: {self.active_robot} [{active_role}]\n"
             f"X: {x:+.3f} m\nY: {y:+.3f} m\nθ: {deg_yaw:+.1f} °\nv: {v:+.2f} m/s"
         )
 
         # Record history for plotting
-        now = self.control_timer.remainingTime()
         self.history_x.append(x)
         self.history_y.append(y)
         if len(self.history_x) > 400:
@@ -836,8 +1251,8 @@ class KheperaDashboard(QMainWindow):
             v = 0.0
             w = 0.0
 
-        self.ros.publish_cmd(v, w)
-        self.lbl_a_cmd.setText(f"Commanded: v = {v:+.2f} m/s | w = {w:+.2f} rad/s")
+        self.ros.publish_cmd(v, w, target_robot=self.active_robot)
+        self.lbl_a_cmd.setText(f"Commanded [{self.active_robot}]: v = {v:+.2f} m/s | w = {w:+.2f} rad/s")
 
         # Update Brain Step 3
         w_r = (v + 0.5 * self.WHEEL_BASE * w) / self.WHEEL_RADIUS
@@ -929,7 +1344,7 @@ class KheperaDashboard(QMainWindow):
 
     def stop_navigation(self):
         self.is_navigating = False
-        self.ros.publish_cmd(0.0, 0.0)
+        self.ros.publish_cmd(0.0, 0.0, target_robot=self.active_robot)
 
     def handle_closed_loop_step(self):
         if not self.waypoints or self.waypoint_idx >= len(self.waypoints):
@@ -990,7 +1405,7 @@ class KheperaDashboard(QMainWindow):
                         self.lbl_traj_status.setText("Trajectory Completed Successfully!")
                     return
 
-        self.ros.publish_cmd(v, w)
+        self.ros.publish_cmd(v, w, target_robot=self.active_robot)
 
         # Update Brain Step 3
         w_r = (v + 0.5 * self.WHEEL_BASE * w) / self.WHEEL_RADIUS
@@ -1032,32 +1447,209 @@ class KheperaDashboard(QMainWindow):
         self.lbl_ts.setText(f"{t_settling:.2f} s")
 
     # --------------------------------------------------------------------------
+    # Multi-Sensor Mapping & Spatial Memory Slots
+    # --------------------------------------------------------------------------
+    def on_map_received(self, msg: OccupancyGrid):
+        self.latest_map = msg
+
+    def on_elevation_received(self, msg: OccupancyGrid):
+        self.latest_elevation = msg
+
+    def on_scan_received(self, msg: LaserScan):
+        self.latest_scan = msg
+
+    def on_imu_received(self, pitch: float, roll: float, az: float):
+        self.imu_pitch = pitch
+        self.imu_roll = roll
+        self.imu_az = az
+        surf_type = "Flat Floor"
+        if abs(pitch) > 6.0 or abs(roll) > 6.0:
+            surf_type = f"Inclined Ramp ({max(abs(pitch), abs(roll)):.1f}°)"
+        elif abs(az - 9.81) > 1.2:
+            surf_type = "Rough Terrain"
+        self.lbl_attitude.setText(f"📐 Pitch: {pitch:+.1f}° | Roll: {roll:+.1f}° [{surf_type}]")
+
+    def on_cliff_alert_received(self, alert: bool):
+        self.is_cliff_alert = alert
+        if alert:
+            self.lbl_cliff.setText("🚨 CLIFF DETECTED!")
+            self.lbl_cliff.setStyleSheet("color: #ffffff; background-color: #d50000; font-weight: bold; font-size: 11px; padding: 4px 8px; border-radius: 4px;")
+        else:
+            self.lbl_cliff.setText("🛡️ Cliff: SAFE")
+            self.lbl_cliff.setStyleSheet("color: #00e676; font-weight: bold; font-size: 11px; background-color: #12161f; padding: 4px 8px; border-radius: 4px; border: 1px solid #2d3340;")
+
+    def on_map_feedback_received(self, msg: str):
+        self.map_feedback_msg = msg
+        self.lbl_map_toast.setText(msg)
+
+    def on_map_layer_changed(self, idx: int):
+        layers = ['obstacles', 'elevation', 'off']
+        self.map_layer_mode = layers[idx] if idx < len(layers) else 'obstacles'
+        self.update_plots()
+
+    def on_sensor_rays_toggled(self, checked: bool):
+        self.show_sensor_rays = checked
+        self.update_plots()
+
+    def on_toggle_auto_explore(self):
+        self.is_auto_exploring = not self.is_auto_exploring
+        self.ros.set_explorer_enabled(self.is_auto_exploring)
+        if self.is_auto_exploring:
+            self.btn_auto_explore.setText("⏹️ Stop Explore")
+            self.btn_auto_explore.setStyleSheet("""
+                QPushButton { background-color: #b71c1c; border: 1px solid #ff5252; color: #ffffff; font-size: 11px; font-weight: bold; border-radius: 4px; padding: 4px 8px; }
+                QPushButton:hover { background-color: #d32f2f; border-color: #ff8a80; }
+                QPushButton:pressed { background-color: #7f0000; border-color: #ffcdd2; padding-top: 6px; padding-bottom: 2px; }
+            """)
+        else:
+            self.btn_auto_explore.setText("🤖 Auto Explore")
+            self.btn_auto_explore.setStyleSheet("""
+                QPushButton { background-color: #2a3a52; border: 1px solid #4da3ff; color: #80d8ff; font-size: 11px; border-radius: 4px; padding: 4px 8px; font-weight: bold; }
+                QPushButton:hover { background-color: #3b4e6d; border-color: #82b1ff; }
+                QPushButton:pressed { background-color: #1a283a; border-color: #bbdefb; padding-top: 6px; padding-bottom: 2px; }
+            """)
+
+    def on_save_map_clicked(self):
+        self.lbl_map_toast.setText("💾 Saving map files...")
+        self.ros.trigger_service(self.ros.save_map_cli, "Save Map")
+
+    def on_clear_map_clicked(self):
+        self.lbl_map_toast.setText("🔄 Clearing map...")
+        self.ros.trigger_service(self.ros.clear_map_cli, "Clear Map")
+
+    def on_load_map_clicked(self):
+        self.lbl_map_toast.setText("📂 Loading saved map...")
+        self.ros.trigger_service(self.ros.load_map_cli, "Load Map")
+
+    # --------------------------------------------------------------------------
     # Matplotlib Plot Refresh
     # --------------------------------------------------------------------------
     def update_plots(self):
-        # 1. Arena Map
+        # 1. Arena Map (Multi-Robot Swarm View & Spatial Map)
         self.ax_map.clear()
-        self.ax_map.set_facecolor('#1a1e27')
-        self.ax_map.grid(True, color='#2c3342', linestyle='--', linewidth=0.5)
-        self.ax_map.set_title("2D Top-Down Arena View", color='#ffffff', fontsize=10, fontweight='bold')
+        self.ax_map.set_facecolor('#141820')
+        self.ax_map.grid(True, color='#2c3342', linestyle='--', linewidth=0.5, alpha=0.6)
+        self.ax_map.set_title("Khepera IV Live Spatial Map & Sensor Suite", color='#ffffff', fontsize=10, fontweight='bold')
         self.ax_map.set_xlabel("X [m]", color='#a4b3c6', fontsize=8)
         self.ax_map.set_ylabel("Y [m]", color='#a4b3c6', fontsize=8)
         self.ax_map.tick_params(colors='#8f9ba8', labelsize=8)
 
-        # Draw trajectory history
-        if len(self.history_x) > 1:
-            self.ax_map.plot(self.history_x, self.history_y, color='#00b0ff', linewidth=1.5, label='Robot Trail')
+        # Render 2D Occupancy Grid Layer
+        if self.map_layer_mode == 'obstacles' and self.latest_map is not None:
+            try:
+                info = self.latest_map.info
+                w, h = info.width, info.height
+                res = info.resolution
+                ox = info.origin.position.x
+                oy = info.origin.position.y
+                data = np.array(self.latest_map.data, dtype=np.int8).reshape((h, w))
+                rgba = np.zeros((h, w, 4), dtype=np.float32)
+                # Free space (0): clean dark arena floor
+                free_mask = (data == 0)
+                rgba[free_mask] = [0.18, 0.22, 0.30, 0.75]
+                # Occupied space (100): bright cyan obstacle walls
+                occ_mask = (data == 100)
+                rgba[occ_mask] = [0.0, 0.95, 0.85, 0.95]
+                extent = [ox, ox + w * res, oy, oy + h * res]
+                self.ax_map.imshow(rgba, origin='lower', extent=extent, interpolation='nearest', zorder=1)
+            except Exception:
+                pass
 
-        # Draw robot body
-        self.ax_map.plot(self.robot_x, self.robot_y, 'o', color='#00e676', markersize=8, label='Robot')
-        # Draw heading arrow
-        arrow_len = 0.12
-        dx = arrow_len * math.cos(self.robot_yaw)
-        dy = arrow_len * math.sin(self.robot_yaw)
-        self.ax_map.arrow(
-            self.robot_x, self.robot_y, dx, dy,
-            head_width=0.04, head_length=0.04, fc='#00e676', ec='#00e676'
-        )
+        # Render 2.5D Elevation / Slope Layer
+        elif self.map_layer_mode == 'elevation' and self.latest_elevation is not None:
+            try:
+                info = self.latest_elevation.info
+                w, h = info.width, info.height
+                res = info.resolution
+                ox = info.origin.position.x
+                oy = info.origin.position.y
+                data = np.array(self.latest_elevation.data, dtype=np.int8).reshape((h, w))
+                rgba = np.zeros((h, w, 4), dtype=np.float32)
+                visited = (data >= 0)
+                slopes = np.clip(data[visited], 0, 30) / 30.0
+                rgba[visited, 0] = slopes
+                rgba[visited, 1] = 1.0 - slopes * 0.7
+                rgba[visited, 2] = 0.2
+                rgba[visited, 3] = 0.80
+                extent = [ox, ox + w * res, oy, oy + h * res]
+                self.ax_map.imshow(rgba, origin='lower', extent=extent, interpolation='nearest', zorder=1)
+            except Exception:
+                pass
+
+        # Draw Sensor Scan Rays radiating from Active Robot
+        if self.show_sensor_rays and self.latest_scan is not None:
+            try:
+                active_r = self.fleet.get(self.active_robot, self.fleet['khepera_1'])
+                ar_x, ar_y, ar_yaw = active_r['x'], active_r['y'], active_r['yaw']
+                ranges = self.latest_scan.ranges
+                num_rays = len(ranges)
+                angle_min = self.latest_scan.angle_min
+                angle_inc = self.latest_scan.angle_increment
+                step = max(1, num_rays // 36)
+                for i in range(0, num_rays, step):
+                    r = ranges[i]
+                    if math.isnan(r) or r < 0.001:
+                        continue
+                    r_clamped = min(r, 2.0)
+                    beam_angle = ar_yaw + angle_min + i * angle_inc
+                    hit_x = ar_x + r_clamped * math.cos(beam_angle)
+                    hit_y = ar_y + r_clamped * math.sin(beam_angle)
+                    color = '#ff9100' if r < 0.25 else '#00e5ff'
+                    self.ax_map.plot([ar_x, hit_x], [ar_y, hit_y], color=color, linewidth=0.8, alpha=0.45, zorder=2)
+                    if r < 1.95:
+                        self.ax_map.plot(hit_x, hit_y, '.', color=color, markersize=3, alpha=0.8, zorder=2)
+            except Exception:
+                pass
+
+        # Draw Communication Tether Lines between robots
+        r1 = self.fleet['khepera_1']
+        r2 = self.fleet['khepera_2']
+        r3 = self.fleet['khepera_3']
+
+        # Draw Extender RF Relay Safe Coverage Zone (1.0m radius comfort zone)
+        rf_comfort = plt.Circle((r2['x'], r2['y']), 1.0, color='#ff9100', fill=True, alpha=0.06, linestyle='--', linewidth=0.8)
+        self.ax_map.add_patch(rf_comfort)
+
+        # Tether: base_link <-> extender
+        self.ax_map.plot([r1['x'], r2['x']], [r1['y'], r2['y']], color='#4da3ff', linestyle=':', linewidth=1.2, alpha=0.7)
+        mid_12_x = (r1['x'] + r2['x']) / 2.0
+        mid_12_y = (r1['y'] + r2['y']) / 2.0
+        d_12 = math.hypot(r2['x'] - r1['x'], r2['y'] - r1['y'])
+        self.ax_map.text(mid_12_x, mid_12_y + 0.04, f"{d_12:.2f}m", color='#4da3ff', fontsize=7, alpha=0.9, ha='center')
+
+        # Tether: extender <-> explorer
+        self.ax_map.plot([r2['x'], r3['x']], [r2['y'], r3['y']], color='#ffd54f', linestyle=':', linewidth=1.2, alpha=0.7)
+        mid_23_x = (r2['x'] + r3['x']) / 2.0
+        mid_23_y = (r2['y'] + r3['y']) / 2.0
+        d_23 = math.hypot(r3['x'] - r2['x'], r3['y'] - r2['y'])
+        self.ax_map.text(mid_23_x, mid_23_y + 0.04, f"{d_23:.2f}m", color='#ffd54f', fontsize=7, alpha=0.9, ha='center')
+
+        # Draw Each Robot in the Fleet
+        for name, rdata in self.fleet.items():
+            rx, ry, ryaw = rdata['x'], rdata['y'], rdata['yaw']
+            color = rdata['color']
+            role = rdata['role']
+
+            # Historical trail
+            if len(rdata['trail_x']) > 1:
+                self.ax_map.plot(rdata['trail_x'], rdata['trail_y'], color=color, linewidth=1.2, alpha=0.5)
+
+            # Robot body marker
+            self.ax_map.plot(rx, ry, 'o', color=color, markersize=8, label=f"{name} [{role}]")
+
+            # Heading arrow
+            arrow_len = 0.12
+            adx = arrow_len * math.cos(ryaw)
+            ady = arrow_len * math.sin(ryaw)
+            self.ax_map.arrow(rx, ry, adx, ady, head_width=0.035, head_length=0.035, fc=color, ec=color)
+
+            # Robot label
+            self.ax_map.text(rx + 0.04, ry + 0.04, f"{name}\n[{role}]", color=color, fontsize=7, fontweight='bold')
+
+            # Highlight selected target robot with outer ring
+            if name == self.active_robot or self.active_robot == 'all':
+                sel_ring = plt.Circle((rx, ry), 0.10, color='#ffffff', fill=False, linestyle='-', linewidth=1.4, alpha=0.9)
+                self.ax_map.add_patch(sel_ring)
 
         # Draw visual goal beacon
         if self.current_mode in ('B', 'C') and self.waypoints:
@@ -1072,7 +1664,19 @@ class KheperaDashboard(QMainWindow):
                 w_ys = [w[1] for w in self.waypoints]
                 self.ax_map.plot(w_xs, w_ys, 'r--', alpha=0.5, label='Path')
 
-        self.ax_map.axis('equal')
+        # Symmetric Centered Scaling for accurate 1:1 metric visualization
+        xs = [r['x'] for r in self.fleet.values()]
+        ys = [r['y'] for r in self.fleet.values()]
+        if self.current_mode in ('B', 'C') and self.waypoints:
+            target_pt = self.waypoints[self.waypoint_idx] if self.waypoint_idx < len(self.waypoints) else self.waypoints[-1]
+            xs.append(target_pt[0])
+            ys.append(target_pt[1])
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        max_dist = max(max(abs(x - cx) for x in xs), max(abs(y - cy) for y in ys), 0.70) + 0.35
+        self.ax_map.set_xlim(cx - max_dist, cx + max_dist)
+        self.ax_map.set_ylim(cy - max_dist, cy + max_dist)
+        self.ax_map.set_aspect('equal', adjustable='box')
         self.ax_map.legend(loc='upper right', facecolor='#16191f', edgecolor='#2d3340', labelcolor='#ffffff', fontsize=7)
 
         # 2. Dynamic Error Curve ρ(t)

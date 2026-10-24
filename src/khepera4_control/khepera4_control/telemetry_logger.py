@@ -22,12 +22,15 @@ class TelemetryLogger(Node):
 
         self.declare_parameter('output_dir', '/home/andy/Desktop/khepera4_ws/telemetry')
         self.declare_parameter('auto_save_seconds', 15.0)
+        self.declare_parameter('robot_name', 'khepera4')
 
         self.output_dir = self.get_parameter('output_dir').value
+        self.robot_name = self.get_parameter('robot_name').value
         os.makedirs(self.output_dir, exist_ok=True)
 
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.cmd_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_callback, 10)
+        # Relative topics for namespace awareness
+        self.odom_sub = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
+        self.cmd_sub = self.create_subscription(Twist, 'cmd_vel', self.cmd_callback, 10)
 
         self.timestamps = []
         self.x_vals = []

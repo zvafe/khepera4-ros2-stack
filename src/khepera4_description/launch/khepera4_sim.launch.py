@@ -86,7 +86,27 @@ def generate_launch_description():
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             '/camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU'
+            '/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU',
+            # 5 Ultrasonic scans (0.20m - 2.0m)
+            '/khepera4/us_0/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/us_1/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/us_2/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/us_3/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/us_4/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            # 8 IR proximity scans (0.002m - 0.25m)
+            '/khepera4/ir_0/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_1/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_2/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_3/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_4/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_5/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_6/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ir_7/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            # 4 Ground IR scans (cliff / surface detection)
+            '/khepera4/ground_ir_0/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ground_ir_1/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ground_ir_2/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            '/khepera4/ground_ir_3/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan'
         ],
         output='screen'
     )

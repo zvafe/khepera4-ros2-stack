@@ -29,14 +29,19 @@ class ClosedLoopController(Node):
         self.declare_parameter('pos_tolerance', 0.02)   # 2 cm tolerance (m)
         self.declare_parameter('yaw_tolerance', 0.05)   # ~2.8 deg tolerance
 
+        # Robot identification & namespacing
+        self.declare_parameter('robot_name', 'khepera4')
+        self.robot_name = self.get_parameter('robot_name').value
+
         # Single goal setpoints (used in 'step' and 'waypoint' modes)
         self.declare_parameter('goal_x', 1.0)
         self.declare_parameter('goal_y', 0.0)
         self.declare_parameter('goal_yaw', 0.0)
 
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.goal_sub = self.create_subscription(PoseStamped, '/goal_pose', self.goal_callback, 10)
+        # Relative topic names for clean ROS 2 multi-robot namespacing
+        self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.odom_sub = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
+        self.goal_sub = self.create_subscription(PoseStamped, 'goal_pose', self.goal_callback, 10)
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -60,7 +65,7 @@ class ClosedLoopController(Node):
 
         # Control loop at 50 Hz
         self.timer = self.create_timer(0.02, self.control_step)
-        self.get_logger().info('Khepera IV Closed-Loop Feedback Controller initialized.')
+        self.get_logger().info(f'[{self.robot_name}] Khepera IV Closed-Loop Feedback Controller initialized.')
 
     def goal_callback(self, msg: PoseStamped):
         x = msg.pose.position.x

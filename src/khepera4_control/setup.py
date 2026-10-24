@@ -31,6 +31,11 @@ setup(
             'closed_loop_controller = khepera4_control.closed_loop_controller:main',
             'telemetry_logger = khepera4_control.telemetry_logger:main',
             'control_dashboard = khepera4_control.dashboard:main',
+            'khepera4_hardware_bridge = khepera4_control.khepera4_hardware_bridge:main',
+            'swarm_coordinator = khepera4_control.swarm_coordinator:main',
+            'khepera4_mapper = khepera4_control.khepera4_mapper:main',
+            'reactive_explorer = khepera4_control.reactive_explorer:main',
+            'mapping_dashboard = khepera4_control.mapping_dashboard:main',
         ],
     },
 )
