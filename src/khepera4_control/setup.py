@@ -16,8 +16,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='andy',
-    maintainer_email='andy@todo.todo',
+    maintainer='zvafe',
+    maintainer_email='andrei@brt-labs.tech',
     description='Closed-loop and open-loop control packages for Khepera IV mobile robot',
     license='Apache-2.0',
     extras_require={

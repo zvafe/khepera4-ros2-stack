@@ -26,7 +26,7 @@ class ClosedLoopController(Node):
         self.declare_parameter('k_yaw', 1.5)            # In-place rotation gain
         self.declare_parameter('v_max', 0.25)           # Max linear speed (m/s)
         self.declare_parameter('w_max', 1.8)            # Max angular speed (rad/s)
-        self.declare_parameter('pos_tolerance', 0.02)   # 2 cm tolerance
+        self.declare_parameter('pos_tolerance', 0.02)   # 2 cm tolerance (m)
         self.declare_parameter('yaw_tolerance', 0.05)   # ~2.8 deg tolerance
 
         # Single goal setpoints (used in 'step' and 'waypoint' modes)
