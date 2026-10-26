@@ -9,13 +9,10 @@ Complies with the **Bazele Sistemelor Automate (BSA)** academic research charter
 ## 🚀 How to Open in Your Browser
 
 ### Option 1: Direct File Link (Easiest)
-Simply open the following file in your web browser (Chrome, Firefox, Edge, etc.):
-```
-file:///home/andy/Desktop/khepera4_ws/khepera4_guide/index.html
-```
-Or from your terminal:
+Simply open `khepera4_guide/index.html` in your web browser (Chrome, Firefox, Edge, etc.).
+From your terminal inside the repository:
 ```bash
-xdg-open /home/andy/Desktop/khepera4_ws/khepera4_guide/index.html
+xdg-open khepera4_guide/index.html
 ```
 
 ---
@@ -23,8 +20,7 @@ xdg-open /home/andy/Desktop/khepera4_ws/khepera4_guide/index.html
 ### Option 2: Local Web Server
 You can also launch a lightweight local Python HTTP server:
 ```bash
-cd ~/Desktop/khepera4_ws/khepera4_guide
-python3 -m http.server 8080
+python3 -m http.server 8080 --directory khepera4_guide
 ```
 Then navigate to: **`http://localhost:8080`**
 

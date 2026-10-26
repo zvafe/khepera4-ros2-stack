@@ -84,7 +84,7 @@ def generate_launch_description():
         name='khepera4_mapper',
         output='screen',
         parameters=[{
-            'use_sim_time': True,
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
             'map_resolution': 0.03,
             'map_width': 200,
             'map_height': 200,
@@ -113,7 +113,7 @@ def generate_launch_description():
         name='reactive_explorer',
         output='screen',
         parameters=[{
-            'use_sim_time': True,
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enabled': True,
             'linear_speed': 0.12,
             'reverse_speed': 0.05,

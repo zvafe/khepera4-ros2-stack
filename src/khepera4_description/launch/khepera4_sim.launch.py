@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, DeclareLaunchArgument, SetEnvironmentVariable
+from launch.actions import ExecuteProcess, DeclareLaunchArgument, SetEnvironmentVariable, Shutdown
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -40,13 +40,15 @@ def generate_launch_description():
     start_gazebo_gui = ExecuteProcess(
         cmd=['gz', 'sim', '-r', LaunchConfiguration('world')],
         output='screen',
-        condition=UnlessCondition(LaunchConfiguration('headless'))
+        condition=UnlessCondition(LaunchConfiguration('headless')),
+        on_exit=Shutdown()
     )
 
     start_gazebo_headless = ExecuteProcess(
         cmd=['gz', 'sim', '-s', '-r', LaunchConfiguration('world')],
         output='screen',
-        condition=IfCondition(LaunchConfiguration('headless'))
+        condition=IfCondition(LaunchConfiguration('headless')),
+        on_exit=Shutdown()
     )
 
     # 2. Robot State Publisher (Publishes /robot_description and TF)

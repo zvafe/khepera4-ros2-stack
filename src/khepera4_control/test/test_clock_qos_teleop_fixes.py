@@ -29,7 +29,7 @@ from sensor_msgs.msg import Imu
 
 from khepera4_control.khepera4_mapper import Khepera4Mapper
 from khepera4_control.reactive_explorer import ReactiveExplorer
-from khepera4_control.mapping_dashboard import MappingDashboardWindow
+from khepera4_control.mapping_dashboard import MappingDashboardWindow, MappingRosWorker
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -109,13 +109,26 @@ def test_reactive_explorer_no_impact_when_stationary():
 
 
 def test_explorer_status_latched_publisher():
-    """Verify ReactiveExplorer creates a latched /explorer/enable publisher."""
+    """Verify ReactiveExplorer creates a latched /explorer/enable publisher and matching subscriber."""
     explorer = ReactiveExplorer()
     try:
         assert hasattr(explorer, 'explorer_status_pub')
         assert explorer.explorer_status_pub.qos_profile.durability == DurabilityPolicy.TRANSIENT_LOCAL
+        assert explorer.enable_sub.qos_profile.durability == DurabilityPolicy.TRANSIENT_LOCAL
     finally:
         explorer.destroy_node()
+
+
+def test_dashboard_explorer_enable_qos_durability():
+    """Verify MappingDashboard publisher on /explorer/enable matches TRANSIENT_LOCAL."""
+    worker = MappingRosWorker()
+    try:
+        worker.init_ros()
+        assert worker.explorer_enable_pub.qos_profile.durability == DurabilityPolicy.TRANSIENT_LOCAL
+    finally:
+        if worker.node:
+            worker.node.destroy_node()
+
 
 
 def test_dashboard_teleop_override_pauses_auto_explore(qapp):

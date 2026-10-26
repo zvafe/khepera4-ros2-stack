@@ -35,7 +35,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'output_dir': '/home/andy/Desktop/khepera4_ws/telemetry',
+            'output_dir': os.environ.get('KHEPERA_TELEMETRY_DIR', os.path.join(os.getcwd(), 'telemetry')),
             'auto_save_seconds': 5.0
         }]
     )

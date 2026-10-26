@@ -137,10 +137,14 @@ class ReactiveExplorer(Node):
             Bool, '/khepera4/turned_over', self.turned_over_callback, 10
         )
         self.enable_sub = self.create_subscription(
-            Bool, '/explorer/enable', self.enable_topic_callback, 10
+            Bool, '/explorer/enable', self.enable_topic_callback, qos_latched
         )
         self.scan_sub = self.create_subscription(
             LaserScan, '/khepera4/scan', self.scan_callback, 10
+        )
+        self.last_fused_odom_time = 0.0
+        self.fused_odom_sub = self.create_subscription(
+            Odometry, '/khepera4/odom', self.fused_odom_callback, 10
         )
         self.odom_sub = self.create_subscription(
             Odometry, '/odom', self.odom_callback, 10
@@ -203,7 +207,18 @@ class ReactiveExplorer(Node):
     # Subscriber Callbacks
     # ==========================================================================
 
+    def fused_odom_callback(self, msg: Odometry):
+        """Track filtered, slip-projected odometry on /khepera4/odom (highest priority)."""
+        self.last_fused_odom_time = self._get_current_time()
+        self._process_odom(msg)
+
     def odom_callback(self, msg: Odometry):
+        """Track raw odometry from /odom, falling back when /khepera4/odom is absent."""
+        if (self._get_current_time() - self.last_fused_odom_time) <= 1.0:
+            return
+        self._process_odom(msg)
+
+    def _process_odom(self, msg: Odometry):
         """Track robot position and displacement history for stall check."""
         self.current_x = msg.pose.pose.position.x
         self.current_y = msg.pose.pose.position.y
@@ -650,7 +665,7 @@ class ReactiveExplorer(Node):
         w_right = max(0.0, (self.avoid_dist - d_right) / self.avoid_dist)
         w_front = max(0.0, (self.avoid_dist - d_front) / self.avoid_dist)
 
-        w_repulse = (w_left - w_right) * self.turn_speed * 1.5
+        w_repulse = (w_right - w_left) * self.turn_speed * 1.5
         if w_front > 0.0:
             steer_sign = 1.0 if d_left >= d_right else -1.0
             turn_bias = steer_sign * w_front * self.turn_speed

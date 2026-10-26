@@ -16,6 +16,7 @@ Interactive GUI providing:
 import sys
 import os
 import math
+import json
 import subprocess
 import threading
 from typing import List, Tuple
@@ -1588,9 +1589,9 @@ class KheperaDashboard(QMainWindow):
                 step = max(1, num_rays // 36)
                 for i in range(0, num_rays, step):
                     r = ranges[i]
-                    if math.isnan(r) or r < 0.001:
+                    if math.isnan(r) or math.isinf(r) or r < 0.005 or r >= 1.95:
                         continue
-                    r_clamped = min(r, 2.0)
+                    r_clamped = r
                     beam_angle = ar_yaw + angle_min + i * angle_inc
                     hit_x = ar_x + r_clamped * math.cos(beam_angle)
                     hit_y = ar_y + r_clamped * math.sin(beam_angle)

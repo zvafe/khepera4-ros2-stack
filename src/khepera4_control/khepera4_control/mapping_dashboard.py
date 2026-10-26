@@ -20,6 +20,7 @@ Features:
 - Complete tactile click visual feedback (:hover, :pressed) on all UI buttons
 """
 
+import collections
 import math
 import os
 import sys
@@ -415,9 +416,16 @@ class MappingRosWorker(QObject):
             rclpy.init()
         self.node = Node('khepera4_mapping_dashboard_node')
 
+        qos_latched = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
         # 1. Direct Single-Robot Command Publisher
         self.cmd_pub = self.node.create_publisher(Twist, '/cmd_vel', 10)
-        self.explorer_enable_pub = self.node.create_publisher(Bool, '/explorer/enable', 10)
+        self.explorer_enable_pub = self.node.create_publisher(Bool, '/explorer/enable', qos_latched)
 
         # 2. Service Clients for Spatial Persistence & Autonomy & Recenter
         self.save_map_cli = self.node.create_client(Trigger, '/save_map')
@@ -428,12 +436,6 @@ class MappingRosWorker(QObject):
         self.toggle_exp_cli = self.node.create_client(Trigger, '/toggle_explorer')
 
         # 3. Subscriptions (Direct single-robot topics + fallbacks)
-        qos_latched = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
         self.node.create_subscription(Odometry, '/odom', self._odom_cb, 20)
         self.node.create_subscription(Odometry, '/khepera4/odom', self._fused_odom_cb, 20)
         self.node.create_subscription(Imu, '/imu/data', self._imu_cb, 30)
@@ -509,6 +511,7 @@ class MappingRosWorker(QObject):
                     self.trigger_service(self.toggle_exp_cli, "Toggle Explorer")
                 else:
                     self.feedback_received.emit("[Warning] Explorer Service Offline")
+                    self.explorer_state_received.emit(False)
                 return
             req = SetBool.Request()
             req.data = bool(enable)
@@ -586,7 +589,7 @@ class MappingDashboardWindow(QMainWindow):
         self.odom_v = 0.0
         self.odom_w = 0.0
         self.has_received_odom = False
-        self.robot_path: List[Tuple[float, float]] = []
+        self.robot_path = collections.deque(maxlen=3000)
 
         # IMU & Attitude
         self.imu_pitch = 0.0
@@ -1169,8 +1172,6 @@ class MappingDashboardWindow(QMainWindow):
 
         if not self.robot_path or math.hypot(x - self.robot_path[-1][0], y - self.robot_path[-1][1]) > 0.03:
             self.robot_path.append((x, y))
-            if len(self.robot_path) > 3000:
-                self.robot_path.pop(0)
 
     def on_imu_received(self, pitch: float, roll: float, az: float):
         self.imu_pitch = pitch
@@ -1434,9 +1435,9 @@ class MappingDashboardWindow(QMainWindow):
 
                 for i in range(0, num_rays, step):
                     r = ranges[i]
-                    if math.isnan(r) or r < 0.005:
+                    if math.isnan(r) or math.isinf(r) or r < 0.005 or r >= 1.95:
                         continue
-                    r_clamped = min(r, 2.0)
+                    r_clamped = r
                     beam_angle = ryaw + angle_min + i * angle_inc
                     hit_x = rx + r_clamped * math.cos(beam_angle)
                     hit_y = ry + r_clamped * math.sin(beam_angle)

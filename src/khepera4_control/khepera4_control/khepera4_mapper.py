@@ -30,7 +30,7 @@ import time
 from typing import List, Optional, Tuple
 
 from geometry_msgs.msg import TransformStamped, Twist
-from khepera4_control.common import euler_from_quaternion, quaternion_from_euler
+from khepera4_control.common import euler_from_quaternion, normalize_angle, quaternion_from_euler
 from nav_msgs.msg import OccupancyGrid, Odometry
 import numpy as np
 from PIL import Image, ImageDraw
@@ -182,7 +182,7 @@ class Khepera4Mapper(Node):
         self.last_odom_x: Optional[float] = None
         self.last_odom_y: Optional[float] = None
         self.last_odom_yaw: Optional[float] = None
-        self.robot_path: List[Tuple[float, float]] = []
+        self.robot_path = collections.deque(maxlen=5000)
 
         # Commanded motion tracking
         self.cmd_linear_x = 0.0
@@ -365,8 +365,15 @@ class Khepera4Mapper(Node):
                     continue
                 if r <= d_detect:
                     ray_ang = syaw + (scan.angle_min + j * scan.angle_increment)
-                    ux = math.cos(ray_ang)
-                    uy = math.sin(ray_ang)
+                    hx = sx + r * math.cos(ray_ang)
+                    hy = sy + r * math.sin(ray_ang)
+                    h_norm = math.hypot(hx, hy)
+                    if h_norm > 1e-4:
+                        ux = hx / h_norm
+                        uy = hy / h_norm
+                    else:
+                        ux = math.cos(ray_ang)
+                        uy = math.sin(ray_ang)
                     w = ((d_detect - r) / d_detect) ** 2
                     vec_x -= w * ux
                     vec_y -= w * uy
@@ -438,18 +445,33 @@ class Khepera4Mapper(Node):
 
         self.fused_odom_pub.publish(fused)
 
-        # Broadcast map -> odom transform to ensure unified TF tree for RViz & Navigation
+        # Broadcast dynamic map -> odom transform: T(map -> odom) = T(map -> base) * T(odom -> base)^-1
+        # This keeps the visual model in RViz (fixed frame: map) strictly aligned with the filtered map pose,
+        # completely preventing wall-collision visual penetration and sensor beam tearing.
+        ox = self.last_odom_x if self.last_odom_x is not None else self.robot_x
+        oy = self.last_odom_y if self.last_odom_y is not None else self.robot_y
+        oyaw = self.last_odom_yaw if self.last_odom_yaw is not None else self.robot_yaw
+
+        d_yaw = normalize_angle(self.robot_yaw - oyaw)
+        cos_dyaw = math.cos(d_yaw)
+        sin_dyaw = math.sin(d_yaw)
+
+        t_map_x = self.robot_x - (ox * cos_dyaw - oy * sin_dyaw)
+        t_map_y = self.robot_y - (ox * sin_dyaw + oy * cos_dyaw)
+
         t_map = TransformStamped()
         t_map.header.stamp = stamp
         t_map.header.frame_id = self.map_frame
         t_map.child_frame_id = 'odom'
-        t_map.transform.translation.x = 0.0
-        t_map.transform.translation.y = 0.0
+        t_map.transform.translation.x = float(t_map_x)
+        t_map.transform.translation.y = float(t_map_y)
         t_map.transform.translation.z = 0.0
-        t_map.transform.rotation.x = 0.0
-        t_map.transform.rotation.y = 0.0
-        t_map.transform.rotation.z = 0.0
-        t_map.transform.rotation.w = 1.0
+
+        q_map_x, q_map_y, q_map_z, q_map_w = quaternion_from_euler(0.0, 0.0, d_yaw)
+        t_map.transform.rotation.x = q_map_x
+        t_map.transform.rotation.y = q_map_y
+        t_map.transform.rotation.z = q_map_z
+        t_map.transform.rotation.w = q_map_w
         self.tf_broadcaster.sendTransform(t_map)
 
     def odom_callback(self, msg: Odometry):
@@ -543,27 +565,28 @@ class Khepera4Mapper(Node):
                 (self.cmd_linear_x > 0.05 or delta_s > 0.001)
             )
 
-            # Check perimeter wall boundary proximity
+            # Check perimeter wall boundary proximity (within 80mm of arena limits)
             is_at_perimeter = False
             perim_normal = None
-            if self.robot_x >= (self.arena_max_x - 0.005) and (dx > 0 or dx_raw > 0):
+            if self.robot_x >= (self.arena_max_x - 0.08) and (dx > 0 or dx_raw > 0 or min_ir_range < 0.04):
                 is_at_perimeter = True
                 perim_normal = (-1.0, 0.0)
-            elif self.robot_x <= (self.arena_min_x + 0.005) and (dx < 0 or dx_raw < 0):
+            elif self.robot_x <= (self.arena_min_x + 0.08) and (dx < 0 or dx_raw < 0 or min_ir_range < 0.04):
                 is_at_perimeter = True
                 perim_normal = (1.0, 0.0)
-            elif self.robot_y >= (self.arena_max_y - 0.005) and (dy > 0 or dy_raw > 0):
+            elif self.robot_y >= (self.arena_max_y - 0.08) and (dy > 0 or dy_raw > 0 or min_ir_range < 0.04):
                 is_at_perimeter = True
                 perim_normal = (0.0, -1.0)
-            elif self.robot_y <= (self.arena_min_y + 0.005) and (dy < 0 or dy_raw < 0):
+            elif self.robot_y <= (self.arena_min_y + 0.08) and (dy < 0 or dy_raw < 0 or min_ir_range < 0.04):
                 is_at_perimeter = True
                 perim_normal = (0.0, 1.0)
 
             # Surface normal and tangential projection
             if is_near_contact or is_recent_impact or is_stalled_proximity or is_at_perimeter:
-                normal = self._compute_surface_normal()
-                if normal is None and is_at_perimeter:
+                if is_at_perimeter and perim_normal is not None:
                     normal = perim_normal
+                else:
+                    normal = self._compute_surface_normal()
 
                 if normal is not None:
                     nx, ny = normal
@@ -643,8 +666,6 @@ class Khepera4Mapper(Node):
             dist_sq = (self.robot_x - last_x) ** 2 + (self.robot_y - last_y) ** 2
             if dist_sq >= (0.02 * 0.02):
                 self.robot_path.append((self.robot_x, self.robot_y))
-                if len(self.robot_path) > 5000:
-                    self.robot_path.pop(0)
 
         # Publish corrected, slip-projected, wall-clamped odometry on /khepera4/odom
         disp_allowed = math.hypot(delta_px, delta_py)
@@ -830,7 +851,10 @@ class Khepera4Mapper(Node):
                 if dist < ranges[idx]:
                     ranges[idx] = dist
 
-        # 2. Process 5 Ultrasonic Sensors (0.20m - 2.0m medium range)
+        # Find minimum detected obstacle distance from IR sensors in robot frame
+        min_ir_dist = min([r for r in ranges if not math.isinf(r)], default=2.0)
+
+        # 2. Process 5 Ultrasonic Sensors (0.02m - 2.0m medium range)
         for i, mount in enumerate(US_MOUNTS):
             scan = self.latest_us[i]
             if scan is None:
@@ -846,6 +870,19 @@ class Khepera4Mapper(Node):
                 angle = math.atan2(py, px)
 
                 idx = int(round((angle - angle_min) / angle_inc)) % num_samples
+
+                # Reject ultrasonic hits that penetrate through obstacles detected at close range by IR
+                if min_ir_dist < 0.15 and dist > (min_ir_dist + 0.15):
+                    continue
+
+                # Verify hit does not lie outside physical arena bounds
+                if self.has_odom:
+                    hit_wx = self.robot_x + dist * math.cos(self.robot_yaw + angle)
+                    hit_wy = self.robot_y + dist * math.sin(self.robot_yaw + angle)
+                    if (hit_wx < (self.arena_min_x - 0.05) or hit_wx > (self.arena_max_x + 0.05) or
+                            hit_wy < (self.arena_min_y - 0.05) or hit_wy > (self.arena_max_y + 0.05)):
+                        continue
+
                 if dist < ranges[idx]:
                     ranges[idx] = dist
 
@@ -902,20 +939,34 @@ class Khepera4Mapper(Node):
 
                 wex = wsx + end_r * math.cos(ray_ang)
                 wey = wsy + end_r * math.sin(ray_ang)
+                wex = max(self.arena_min_x, min(self.arena_max_x, wex))
+                wey = max(self.arena_min_y, min(self.arena_max_y, wey))
                 c1, r1 = self.world_to_grid(wex, wey)
 
                 cells = bresenham_line(c0, r0, c1, r1)
-                free_cells = cells[:-1] if is_hit else cells
-                for col, row in free_cells:
-                    if self.is_valid_cell(col, row):
-                        self.log_odds[row, col] = max(
-                            self.l_min, self.log_odds[row, col] - self.l_free
+                for k, (col, row) in enumerate(cells):
+                    if not self.is_valid_cell(col, row):
+                        break
+                    if is_hit and (k == len(cells) - 1):
+                        self.log_odds[row, col] = min(
+                            self.l_max, self.log_odds[row, col] + self.l_occ
                         )
-
-                if is_hit and self.is_valid_cell(c1, r1):
-                    self.log_odds[r1, c1] = min(
-                        self.l_max, self.log_odds[r1, c1] + self.l_occ
+                        break
+                    # Stop ray on existing occupied cell (cannot see through walls)
+                    if self.log_odds[row, col] >= self.l_occ:
+                        break
+                    self.log_odds[row, col] = max(
+                        self.l_min, self.log_odds[row, col] - self.l_free
                     )
+
+        # Collect minimum detected obstacle distance from IR sensors
+        min_ir_dist = 2.0
+        for scan in self.latest_ir:
+            if scan is not None and scan.ranges:
+                for r in scan.ranges:
+                    if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                        if r < min_ir_dist:
+                            min_ir_dist = r
 
         # 2. Cast Ultrasonic rays
         for i, (sx, sy, syaw) in enumerate(US_MOUNTS):
@@ -930,23 +981,36 @@ class Khepera4Mapper(Node):
                 ray_ang = ryaw + syaw + (scan.angle_min + j * scan.angle_increment)
                 is_hit = (not math.isnan(r) and not math.isinf(r) and
                           scan.range_min <= r <= scan.range_max)
+
+                # Cross-sensor occlusion: if an obstacle is very close by IR,
+                # reject ultrasonic rays that penetrate through it
+                if min_ir_dist < 0.15 and is_hit and r > (min_ir_dist + 0.15):
+                    continue
+                if not is_hit and min_ir_dist < 0.15:
+                    continue
+
                 end_r = r if is_hit else min(scan.range_max, 1.2)
 
                 wex = wsx + end_r * math.cos(ray_ang)
                 wey = wsy + end_r * math.sin(ray_ang)
+                wex = max(self.arena_min_x, min(self.arena_max_x, wex))
+                wey = max(self.arena_min_y, min(self.arena_max_y, wey))
                 c1, r1 = self.world_to_grid(wex, wey)
 
                 cells = bresenham_line(c0, r0, c1, r1)
-                free_cells = cells[:-1] if is_hit else cells
-                for col, row in free_cells:
-                    if self.is_valid_cell(col, row):
-                        self.log_odds[row, col] = max(
-                            self.l_min, self.log_odds[row, col] - self.l_free
+                for k, (col, row) in enumerate(cells):
+                    if not self.is_valid_cell(col, row):
+                        break
+                    if is_hit and (k == len(cells) - 1):
+                        self.log_odds[row, col] = min(
+                            self.l_max, self.log_odds[row, col] + self.l_occ
                         )
-
-                if is_hit and self.is_valid_cell(c1, r1):
-                    self.log_odds[r1, c1] = min(
-                        self.l_max, self.log_odds[r1, c1] + self.l_occ
+                        break
+                    # Stop ray on existing occupied cell (cannot see through walls)
+                    if self.log_odds[row, col] >= self.l_occ:
+                        break
+                    self.log_odds[row, col] = max(
+                        self.l_min, self.log_odds[row, col] - self.l_free
                     )
 
     def _update_footprint_maps(self):

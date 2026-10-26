@@ -58,7 +58,7 @@ def generate_launch_description():
     robots = [
         ('khepera_1', 'base_link', '0.10 0.45 0.90', 0.0, 0.0, 0.0),
         ('khepera_2', 'extender',  '0.95 0.55 0.10', 0.6, 0.0, 0.0),
-        ('khepera_3', 'ranger',  '0.10 0.85 0.35', 1.2, 0.0, 0.0),
+        ('khepera_3', 'explorer',  '0.10 0.85 0.35', 1.2, 0.0, 0.0),
     ]
 
     spawn_nodes = []

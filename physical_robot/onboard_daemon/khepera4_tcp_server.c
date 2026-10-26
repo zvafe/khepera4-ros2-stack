@@ -133,12 +133,12 @@ void process_ascii_command(const char *cmd, char *response, size_t max_resp) {
         memset(ir_buf, 0, sizeof(ir_buf));
 #ifdef HAVE_LIBKHEPERA
         if (dsPic != NULL) {
-            char raw_ir[32];
-            kh4_proximity_ir(raw_ir, dsPic);
-            /* Parse 12 sensor values */
+            unsigned char raw_ir[32];
+            kh4_proximity_ir((char *)raw_ir, dsPic);
+            /* Parse 12 sensor values without signed-char promotion */
             int ir[12];
             for (int i = 0; i < 12; i++) {
-                ir[i] = (raw_ir[i*2] | (raw_ir[i*2 + 1] << 8));
+                ir[i] = (int)(raw_ir[i*2] | ((unsigned int)raw_ir[i*2 + 1] << 8));
             }
             snprintf(response, max_resp, "n,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\r\n",
                      ir[0], ir[1], ir[2], ir[3], ir[4], ir[5],
@@ -153,10 +153,10 @@ void process_ascii_command(const char *cmd, char *response, size_t max_resp) {
         int us[5] = {1000, 1000, 1000, 1000, 1000};
 #ifdef HAVE_LIBKHEPERA
         if (dsPic != NULL) {
-            char us_raw[16];
-            kh4_measure_us(us_raw, dsPic);
+            unsigned char us_raw[16];
+            kh4_measure_us((char *)us_raw, dsPic);
             for (int i = 0; i < 5; i++) {
-                us[i] = (us_raw[i*2] | (us_raw[i*2 + 1] << 8));
+                us[i] = (int)(us_raw[i*2] | ((unsigned int)us_raw[i*2 + 1] << 8));
             }
         }
 #endif
@@ -167,9 +167,9 @@ void process_ascii_command(const char *cmd, char *response, size_t max_resp) {
         int volt_mv = 7400;
 #ifdef HAVE_LIBKHEPERA
         if (dsPic != NULL) {
-            char bat_raw[32];
-            kh4_battery_status(bat_raw, dsPic);
-            volt_mv = (bat_raw[0] | (bat_raw[1] << 8));
+            unsigned char bat_raw[32];
+            kh4_battery_status((char *)bat_raw, dsPic);
+            volt_mv = (int)(bat_raw[0] | ((unsigned int)bat_raw[1] << 8));
         }
 #endif
         snprintf(response, max_resp, "v,%d\r\n", volt_mv);
@@ -253,6 +253,8 @@ int main(int argc, char *argv[]) {
         /* Disable Nagle's algorithm for low-latency robotics communication */
         int flag = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
+        int keepalive = 1;
+        setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepalive, sizeof(int));
 
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
@@ -282,7 +284,12 @@ int main(int argc, char *argv[]) {
                             line_buf[line_pos] = '\0';
                             process_ascii_command(line_buf, resp_buf, sizeof(resp_buf));
                             if (resp_buf[0] != '\0') {
-                                send(client_fd, resp_buf, strlen(resp_buf), 0);
+                                ssize_t s = send(client_fd, resp_buf, strlen(resp_buf), 0);
+                                if (s < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                                    printf("[SERVER] Socket send failure: %s\n", strerror(errno));
+                                    stop_motors();
+                                    break;
+                                }
                             }
                             line_pos = 0;
                         }

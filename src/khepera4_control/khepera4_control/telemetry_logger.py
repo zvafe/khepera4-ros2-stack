@@ -20,7 +20,8 @@ class TelemetryLogger(Node):
     def __init__(self):
         super().__init__('telemetry_logger')
 
-        self.declare_parameter('output_dir', '/home/andy/Desktop/khepera4_ws/telemetry')
+        default_out = os.environ.get('KHEPERA_TELEMETRY_DIR', os.path.join(os.getcwd(), 'telemetry'))
+        self.declare_parameter('output_dir', default_out)
         self.declare_parameter('auto_save_seconds', 15.0)
         self.declare_parameter('robot_name', 'khepera4')
 

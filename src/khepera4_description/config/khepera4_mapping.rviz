@@ -353,7 +353,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 24; 28; 36
-    Fixed Frame: odom
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:

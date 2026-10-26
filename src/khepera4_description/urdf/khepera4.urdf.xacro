@@ -365,7 +365,7 @@
       <topic>/$(arg robot_name)/us_0/scan</topic>
       <ray>
         <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
-        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+        <range><min>0.02</min><max>2.00</max><resolution>0.005</resolution></range>
       </ray>
     </sensor>
   </gazebo>
@@ -376,7 +376,7 @@
       <topic>/$(arg robot_name)/us_1/scan</topic>
       <ray>
         <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
-        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+        <range><min>0.02</min><max>2.00</max><resolution>0.005</resolution></range>
       </ray>
     </sensor>
   </gazebo>
@@ -387,7 +387,7 @@
       <topic>/$(arg robot_name)/us_2/scan</topic>
       <ray>
         <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
-        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+        <range><min>0.02</min><max>2.00</max><resolution>0.005</resolution></range>
       </ray>
     </sensor>
   </gazebo>
@@ -398,7 +398,7 @@
       <topic>/$(arg robot_name)/us_3/scan</topic>
       <ray>
         <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
-        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+        <range><min>0.02</min><max>2.00</max><resolution>0.005</resolution></range>
       </ray>
     </sensor>
   </gazebo>
@@ -409,7 +409,7 @@
       <topic>/$(arg robot_name)/us_4/scan</topic>
       <ray>
         <scan><horizontal><samples>5</samples><resolution>1</resolution><min_angle>-0.2618</min_angle><max_angle>0.2618</max_angle></horizontal></scan>
-        <range><min>0.20</min><max>2.00</max><resolution>0.005</resolution></range>
+        <range><min>0.02</min><max>2.00</max><resolution>0.005</resolution></range>
       </ray>
     </sensor>
   </gazebo>

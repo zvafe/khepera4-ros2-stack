@@ -141,10 +141,11 @@ cmd_stream_camera() {
         3|khepera_3) target_ip="${K3_IP}" ;;
     esac
 
-    echo "Starting GStreamer camera receiver from ${target_ip}:5000..."
-    echo "Ensure GStreamer sender is started on robot: 'gst-launch v4l2src device=/dev/video6 ! ... tcpserversink port=5000'"
-    gst-launch-1.0 tcpclientsrc host="${target_ip}" port=5000 ! multipartdemux ! jpegdec ! videoconvert ! autovideosink || \
-        vlc "tcp://${target_ip}:5000"
+    local camera_port="${KHEPERA_CAMERA_PORT:-5001}"
+    echo "Starting GStreamer camera receiver from ${target_ip}:${camera_port}..."
+    echo "Ensure GStreamer sender is started on robot: 'gst-launch-1.0 v4l2src device=/dev/video6 ! ... tcpserversink port=${camera_port}'"
+    gst-launch-1.0 tcpclientsrc host="${target_ip}" port="${camera_port}" ! multipartdemux ! jpegdec ! videoconvert ! autovideosink || \
+        vlc "tcp://${target_ip}:${camera_port}"
 }
 
 case "${1:-}" in

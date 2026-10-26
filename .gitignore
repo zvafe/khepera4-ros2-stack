@@ -44,3 +44,8 @@ telemetry/
 
 # Agents created by antigravity
 .agents/
+
+# Native binaries & runtime artifacts
+physical_robot/onboard_daemon/khepera4_tcp_server_mock
+physical_robot/onboard_daemon/khepera4_tcp_server
+maps/*.png
