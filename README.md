@@ -2,12 +2,8 @@
 
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS_2-Jazzy_Jalisco-343434.svg?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![Gazebo Harmonic](https://img.shields.io/badge/Gazebo-Harmonic_8.15-FF6F00.svg?logo=gazebo&logoColor=white)](https://gazebosim.org/)
-[![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04_LTS-E95420.svg?logo=ubuntu&logoColor=white)](https://releases.ubuntu.com/noble/)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
-[![Verification Passed](https://img.shields.io/badge/Verification-228%20Passed-brightgreen.svg)](#-verification--automated-tests)
-[![Curriculum BSA](https://img.shields.io/badge/Curriculum-Bazele_Sistemelor_Automate-blueviolet.svg)](#-academic-context--credits)
-[![Repository](https://img.shields.io/badge/GitHub-zvafe%2Fkhepera4--ros2--stack-blue?logo=github)](https://github.com/zvafe/khepera4-ros2-stack)
-[![License Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 
 An enterprise-grade, cyber-physical robotics research platform and educational testbed for the **K-Team Khepera IV** mobile robot. Built natively on **ROS 2 Jazzy Jalisco** and **Gazebo Harmonic (GZ Sim 8)**, this repository unifies single-robot closed-loop Lyapunov cascade control, multi-sensor 2D/2.5D SLAM, autonomous frontier exploration, and a synchronized 3-robot formation fleet with real-time TCP hardware bridges for physical robot deployment.
 
