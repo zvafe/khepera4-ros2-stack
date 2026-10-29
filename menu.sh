@@ -88,6 +88,7 @@ dispatch_ros2_cmd() {
             # shellcheck disable=SC1091
             source "${WS_ROOT}/install/setup.bash"
         fi
+        export GZ_SIM_RESOURCE_PATH="${WS_ROOT}/src/khepera4_description:${WS_ROOT}/install/khepera4_description/share:${GZ_SIM_RESOURCE_PATH}"
         eval "${cmd}"
     elif [ "${ENV_CHOICE}" = "2" ]; then
         "${WS_ROOT}/run.sh" --native ${cmd}
