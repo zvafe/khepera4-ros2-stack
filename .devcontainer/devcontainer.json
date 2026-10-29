@@ -12,10 +12,10 @@
     "--privileged",
     "-v", "/tmp/.X11-unix:/tmp/.X11-unix",
     "-v", "/dev/dri:/dev/dri",
-    "-e", "DISPLAY=${localEnv:DISPLAY}"
+    "-e", "DISPLAY=${localEnv:DISPLAY::0}"
   ],
   "containerEnv": {
-    "DISPLAY": "${localEnv:DISPLAY}",
+    "DISPLAY": "${localEnv:DISPLAY::0}",
     "QT_X11_NO_MITSHM": "1",
     "ROS_DISTRO": "jazzy",
     "GZ_SIM_RESOURCE_PATH": "/workspace/install/khepera4_description/share:/workspace/src/khepera4_description/meshes:/workspace/src/khepera4_description/worlds:/workspace/src"

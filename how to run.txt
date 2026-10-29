@@ -1,0 +1,97 @@
+================================================================================
+  KHEPERA IV (BRT K4) - STUDENT QUICK START GUIDE (DOCKER & ROS 2 JAZZY)
+================================================================================
+
+This guide explains how to install Docker, launch the simulation in one click,
+and run the 3 core Khepera IV ROS 2 commands on Windows 10/11.
+
+--------------------------------------------------------------------------------
+STEP 1: INSTALL DOCKER DESKTOP (ONE-TIME SETUP)
+--------------------------------------------------------------------------------
+1. Download Docker Desktop for Windows:
+   https://www.docker.com/products/docker-desktop/
+   (Or run in PowerShell: winget install Docker.DockerDesktop)
+2. Run the installer and ensure:
+   [X] "Use WSL 2 instead of Hyper-V (recommended)" is CHECKED.
+3. Once installed, start "Docker Desktop" from the Windows Start menu.
+4. In Docker Desktop, go to:
+   Settings (gear icon) -> Resources -> WSL Integration
+   -> Enable "Ubuntu" (or your default WSL distro) -> Click "Apply & Restart".
+5. Wait until the Docker whale icon in your system tray turns GREEN (Running).
+
+--------------------------------------------------------------------------------
+STEP 2: OPEN POWERSHELL IN THE PROJECT FOLDER
+--------------------------------------------------------------------------------
+1. Open the project folder on your Desktop:
+   "khepera4-ros2-stack-main"
+2. Hold SHIFT and Right-Click inside an empty area of the folder.
+3. Select "Open in Terminal" or "Open PowerShell window here".
+   (Alternatively: Press Win + R, type "powershell", press Enter, and run:
+    cd "$HOME\Desktop\khepera4-ros2-stack-main" )
+
+--------------------------------------------------------------------------------
+STEP 3: LAUNCH THE SIMULATION (CHOOSE ONE MODE)
+--------------------------------------------------------------------------------
+
+You have TWO ways to run the simulation:
+
+>>> MODE A: WEB BROWSER MODE (RECOMMENDED & FOOLPROOF) <<<
+Runs a virtual desktop inside your web browser. Zero graphics driver issues.
+Works on any laptop (Intel, AMD, Nvidia).
+
+1. In PowerShell, run:
+   .\run.ps1 --web
+   (If using Linux / WSL Ubuntu terminal: ./run.sh --web)
+
+2. Open Google Chrome or Microsoft Edge and go to:
+   http://localhost:6080
+
+3. You will see a Linux desktop in your browser.
+   - Right-click anywhere on the desktop to launch Gazebo, RViz, or Control Station.
+   - Or use the terminal already open on that desktop to run ROS 2 commands.
+
+
+>>> MODE B: NATIVE GUI MODE (WINDOWS 11 WSLg) <<<
+Opens hardware-accelerated 3D Gazebo windows directly on your Windows desktop.
+
+1. In PowerShell, run:
+   .\run.ps1 --native
+   (If using Linux / WSL Ubuntu terminal: ./run.sh --native)
+
+2. A SECOND terminal window will pop up with the Docker icon and prompt:
+   root@docker-desktop:/workspace#
+
+   NOTE: Having 2 terminals is completely normal!
+   - Terminal 1 (PowerShell) is your host launcher.
+   - Terminal 2 (root@docker-desktop) is inside the simulation container.
+   Run all your ROS 2 commands inside Terminal 2!
+
+--------------------------------------------------------------------------------
+STEP 4: THE 3 CORE ROS 2 COMMANDS (RUN INSIDE THE CONTAINER TERMINAL)
+--------------------------------------------------------------------------------
+
+Inside the container terminal (root@docker-desktop:/workspace#), you can run:
+
+1. LAUNCH 3D GAZEBO SIMULATION:
+   ros2 launch khepera4_description khepera4_sim.launch.py
+   -> Opens the 3D physics arena with the Khepera IV mobile robot.
+
+2. LAUNCH CONTROL STATION DASHBOARD GUI:
+   ros2 launch khepera4_control control_station.launch.py
+   -> Opens the telemetry dashboard with real-time odometry plots and controls.
+   (IMPORTANT: Be sure to type a dot "." in "control_station.launch.py", NOT a comma ",")
+
+3. DRIVE THE ROBOT WITH KEYBOARD (TELEOPERATION):
+   ros2 run teleop_twist_keyboard teleop_twist_keyboard
+   -> Use keys 'i', 'j', 'k', 'l', ',' to drive the Khepera IV robot in real-time.
+
+--------------------------------------------------------------------------------
+QUICK CHEAT SHEET & TROUBLESHOOTING
+--------------------------------------------------------------------------------
+* To exit the container terminal: type "exit" and press Enter.
+* To stop background web containers: in PowerShell run "docker compose -f docker/docker-compose.yml down"
+* If you only need physics/nodes without a 3D window (Headless mode):
+  ros2 launch khepera4_description khepera4_sim.launch.py headless:=true
+* Avoid Port 1947 for the web port: Port 1947 conflicts with Sentinel HASP license
+  managers (MATLAB/CAD licenses). Default port is 6080.
+================================================================================

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+# Ensure DISPLAY is valid if unset or set to placeholder
+if [ -z "$DISPLAY" ] || [ "$DISPLAY" = "needs-to-be-defined" ]; then
+    export DISPLAY=:0
+fi
+
 # Source ROS 2 Jazzy core environment
 if [ -f "/opt/ros/jazzy/setup.bash" ]; then
     source "/opt/ros/jazzy/setup.bash"
