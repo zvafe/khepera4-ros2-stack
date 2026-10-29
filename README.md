@@ -15,6 +15,12 @@ An enterprise-grade, cyber-physical robotics research platform and educational t
 
 ## 🚀 30-Second Quickstart
 
+### 🎮 Option 0: Interactive Control & Simulation Hub (Easiest)
+Launch an interactive text menu to pick any simulation, swarm, mock, physical lab robot, dashboard, RViz2, or setup/clean environment:
+```bash
+./menu.sh
+```
+
 ### Option 1: Universal Docker Launcher (Zero-Install Setup)
 Launch instantly without configuring local ROS 2 dependencies:
 ```bash
