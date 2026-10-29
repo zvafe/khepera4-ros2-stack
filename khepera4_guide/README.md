@@ -2,7 +2,7 @@
 
 An interactive, browser-based educational dashboard designed for undergraduate students exploring **Gazebo Harmonic**, **ROS 2 Jazzy**, and **Closed-Loop Control Systems** on the Khepera IV mobile robot.
 
-Complies with the **Bazele Sistemelor Automate (BSA)** academic research charter led by Prof. Ioan Dumitrache.
+Complies with the **Bazele Sistemelor Automate (BSA)** academic control systems curriculum / charter and classical 2nd-order control theory.
 
 ---
 

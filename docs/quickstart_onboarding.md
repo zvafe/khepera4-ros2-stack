@@ -7,6 +7,13 @@
 
 ## 1. Prerequisites & Host Platform Setup
 
+> [!TIP]
+> **Zero-Installation Option (Docker):**  
+> If you prefer not to install ROS 2 Jazzy or Gazebo Harmonic directly on your host machine, you can run the entire stack inside our pre-configured Docker container on Linux, Windows 11 (WSL2), or macOS. See the **[Docker & Containerized Simulation Guide](file:///home/andy/Desktop/khepera4_ws/docs/docker_and_simulation.md)** or simply execute:
+> ```bash
+> ./run.sh
+> ```
+
 ### 1.1 Linux Native (Ubuntu 24.04 LTS Noble Numbat)
 
 1. **Install ROS 2 Jazzy Jalisco Desktop:**

@@ -61,15 +61,15 @@ export GZ_SIM_RESOURCE_PATH="/workspace/install/khepera4_description/share:/work
 
 echo "[start-web] Stack is fully running! Open browser at http://localhost:${KHEPERA_WEB_PORT:-6080}"
 
-# Graceful cleanup on container stop
+# Graceful cleanup on container stop or exit
 cleanup() {
+    trap - SIGTERM SIGINT EXIT
     echo "[start-web] Stopping all services..."
     kill -TERM "$WEBSOCKIFY_PID" "$FLUXBOX_PID" "$XVFB_PID" 2>/dev/null || true
     pkill x11vnc 2>/dev/null || true
-    wait
     exit 0
 }
-trap cleanup SIGTERM SIGINT
+trap cleanup SIGTERM SIGINT EXIT
 
 # 5. Handle command execution or launch default interactive xterm console
 if [ "$#" -gt 0 ]; then

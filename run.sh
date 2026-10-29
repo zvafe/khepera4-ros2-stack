@@ -72,6 +72,7 @@ KHEPERA_WEB_PORT=${default_port}
 COMPOSE_PROFILES=${selected_mode}
 RESOLUTION=1920x1080x24
 ROS_DOMAIN_ID=0
+LIBGL_ALWAYS_SOFTWARE=0
 EOF
 
     echo "Configuration saved to ${ENV_FILE}:"
@@ -203,7 +204,7 @@ elif [ "$TARGET_MODE" = "web" ]; then
     echo "=================================================================="
 
     if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
-        exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm --service-ports khepera-web "${EXTRA_ARGS[@]}"
+        exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm --service-ports khepera-web /start-web.sh "${EXTRA_ARGS[@]}"
     else
         exec docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up khepera-web
     fi
