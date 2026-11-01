@@ -101,8 +101,8 @@ def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
 class Khepera4Mapper(Node):
     """Multi-sensor fusion, probabilistic 2D mapping, 2.5D elevation & terrain classification."""
 
-    def __init__(self):
-        super().__init__('khepera4_mapper')
+    def __init__(self, **kwargs):
+        super().__init__('khepera4_mapper', **kwargs)
 
         # ----------------------------------------------------------------------
         # Parameters
@@ -113,6 +113,7 @@ class Khepera4Mapper(Node):
         self.declare_parameter('map_origin_x', -3.0)        # Grid origin X (m)
         self.declare_parameter('map_origin_y', -3.0)        # Grid origin Y (m)
         self.declare_parameter('map_frame', 'map')
+        self.declare_parameter('publish_map_tf', True)
         self.declare_parameter('robot_frame', 'base_footprint')
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('imu_topic', '/imu/data')
@@ -135,12 +136,38 @@ class Khepera4Mapper(Node):
         self.declare_parameter('arena_min_y', -2.405)
         self.declare_parameter('arena_max_y', 2.405)
 
+        # Phase 1: Multi-Sensor Rate-of-Change & IMU Gating Parameters
+        self.declare_parameter('enable_ir_gradient_slip_check', True)
+        self.declare_parameter('enable_imu_accel_gate', True)
+        self.declare_parameter('ir_gradient_window_s', 0.10)          # 100 ms rolling window
+        self.declare_parameter('ir_gradient_min_cmd_v', 0.04)         # cmd_linear_x > 0.04 m/s
+        self.declare_parameter('ir_gradient_min_delta_s', 0.002)      # encoder advance > 0.002 m
+        self.declare_parameter('ir_gradient_max_closing_rate', 0.0005)  # distance delta approx 0
+        self.declare_parameter('ir_gradient_proximity_thresh', 0.08)  # obstacle proximity threshold (m)
+        self.declare_parameter('imu_accel_gate_threshold', 0.10)      # IMU dynamic accel gate (m/s^2)
+        self.declare_parameter('imu_accel_proximity_thresh', 0.08)    # proximity gate for accel (m)
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+
+        # Phase 2: 2D Correlative Scan Matching & Pose Correction Parameters
+        self.declare_parameter('enable_scan_matching', True)
+        self.declare_parameter('csm_search_dist', 0.03)               # +/- 3cm translation window
+        self.declare_parameter('csm_search_angle', 0.03)              # +/- ~1.7 deg yaw window
+        self.declare_parameter('csm_trans_step', 0.01)                # 1cm resolution
+        self.declare_parameter('csm_angle_step', 0.015)               # ~0.86 deg resolution
+        self.declare_parameter('csm_min_valid_hits', 4)               # minimum scan points required
+        self.declare_parameter('csm_score_threshold', 0.20)           # minimum improvement score
+        self.declare_parameter('csm_alpha_smooth', 0.30)              # EMA smoothing factor for anti-jitter
+        self.declare_parameter('csm_deadband', 0.005)                 # 5mm deadband for micro-jitter suppression
+        self.declare_parameter('hit_count_confirm_threshold', 10)     # hits required to solidify wall
+        self.declare_parameter('enable_footprint_carving', True)      # dynamically erase ghost walls on traversal
+
         self.res = float(self.get_parameter('map_resolution').value)
         self.width = int(self.get_parameter('map_width').value)
         self.height = int(self.get_parameter('map_height').value)
         self.origin_x = float(self.get_parameter('map_origin_x').value)
         self.origin_y = float(self.get_parameter('map_origin_y').value)
         self.map_frame = self.get_parameter('map_frame').value
+        self.publish_map_tf = bool(self.get_parameter('publish_map_tf').value)
         self.robot_frame = self.get_parameter('robot_frame').value
         self.l_free = float(self.get_parameter('log_odds_free').value)
         self.l_occ = float(self.get_parameter('log_odds_occ').value)
@@ -159,11 +186,36 @@ class Khepera4Mapper(Node):
         self.arena_min_y = float(self.get_parameter('arena_min_y').value)
         self.arena_max_y = float(self.get_parameter('arena_max_y').value)
 
+        self.enable_ir_gradient_slip_check = bool(self.get_parameter('enable_ir_gradient_slip_check').value)
+        self.enable_imu_accel_gate = bool(self.get_parameter('enable_imu_accel_gate').value)
+        self.ir_gradient_window_s = float(self.get_parameter('ir_gradient_window_s').value)
+        self.ir_gradient_min_cmd_v = float(self.get_parameter('ir_gradient_min_cmd_v').value)
+        self.ir_gradient_min_delta_s = float(self.get_parameter('ir_gradient_min_delta_s').value)
+        self.ir_gradient_max_closing_rate = float(self.get_parameter('ir_gradient_max_closing_rate').value)
+        self.ir_gradient_proximity_thresh = float(self.get_parameter('ir_gradient_proximity_thresh').value)
+        self.imu_accel_gate_threshold = float(self.get_parameter('imu_accel_gate_threshold').value)
+        self.imu_accel_proximity_thresh = float(self.get_parameter('imu_accel_proximity_thresh').value)
+
+        self.enable_scan_matching = bool(self.get_parameter('enable_scan_matching').value)
+        self.csm_search_dist = float(self.get_parameter('csm_search_dist').value)
+        self.csm_search_angle = float(self.get_parameter('csm_search_angle').value)
+        self.csm_trans_step = float(self.get_parameter('csm_trans_step').value)
+        self.csm_angle_step = float(self.get_parameter('csm_angle_step').value)
+        self.csm_min_valid_hits = int(self.get_parameter('csm_min_valid_hits').value)
+        self.csm_score_thresh = float(self.get_parameter('csm_score_threshold').value)
+        self.csm_alpha_smooth = float(self.get_parameter('csm_alpha_smooth').value)
+        self.csm_deadband = float(self.get_parameter('csm_deadband').value)
+        self.hit_count_confirm_threshold = int(self.get_parameter('hit_count_confirm_threshold').value)
+        self.enable_footprint_carving = bool(self.get_parameter('enable_footprint_carving').value)
+
         # ----------------------------------------------------------------------
         # State Arrays
         # ----------------------------------------------------------------------
         # 2D Occupancy Grid log-odds belief: 0.0 = prior (p=0.5, unknown)
         self.log_odds = np.zeros((self.height, self.width), dtype=np.float32)
+
+        # 2D Hit confirmation count matrix (0-255) for quality scoring & ghost wall erosion
+        self.hit_count = np.zeros((self.height, self.width), dtype=np.uint8)
 
         # 2.5D Elevation & slope grid (slope in degrees 0-100, -1 = unvisited)
         self.elevation_grid = np.full((self.height, self.width), -1, dtype=np.int8)
@@ -188,6 +240,15 @@ class Khepera4Mapper(Node):
         self.cmd_linear_x = 0.0
         self.cmd_angular_z = 0.0
         self.last_cmd_vel_time = 0.0
+
+        # Heuristic slip & rate-of-change telemetry state
+        self.is_wheel_slipping = False
+        self.is_near_contact = False
+        self.front_range_history = collections.deque(maxlen=30)
+        self.last_odom_time: Optional[float] = None
+        self.last_wheel_v: float = 0.0
+        self.wheel_accel_x: float = 0.0
+        self.ax_dynamic_filtered: float = 0.0
 
         # IMU state, jerk & impact tracking
         self.current_slope_deg = 0.0
@@ -254,9 +315,16 @@ class Khepera4Mapper(Node):
         self.odom_sub = self.create_subscription(Odometry, odom_top, self.odom_callback, 20)
         self.khepera_odom_sub = None
 
+        cmd_top = str(self.get_parameter('cmd_vel_topic').value)
         self.cmd_sub = self.create_subscription(
-            Twist, '/cmd_vel', self.cmd_vel_callback, 10
+            Twist, cmd_top, self.cmd_vel_callback, 10
         )
+        if cmd_top != '/khepera4/cmd_vel':
+            self.khepera_cmd_sub = self.create_subscription(
+                Twist, '/khepera4/cmd_vel', self.cmd_vel_callback, 10
+            )
+        else:
+            self.khepera_cmd_sub = None
 
         imu_top = self.get_parameter('imu_topic').value
         self.imu_sub = self.create_subscription(Imu, imu_top, self.imu_callback, 30)
@@ -350,7 +418,7 @@ class Khepera4Mapper(Node):
 
     def _compute_surface_normal(self) -> Optional[Tuple[float, float]]:
         """Compute surface normal in world coordinates pointing OUT of obstacle toward robot."""
-        d_detect = 0.040
+        d_detect = 0.055
         vec_x = 0.0
         vec_y = 0.0
         total_w = 0.0
@@ -381,7 +449,7 @@ class Khepera4Mapper(Node):
 
         norm_sq = vec_x * vec_x + vec_y * vec_y
         if norm_sq < 1e-8:
-            # Fallback: check closest valid IR reading
+            # Fallback: check closest valid IR reading within detection threshold
             min_r = float('inf')
             best_dir = None
             for i, mount in enumerate(IR_MOUNTS):
@@ -392,7 +460,7 @@ class Khepera4Mapper(Node):
                 for j, r in enumerate(scan.ranges):
                     if math.isnan(r) or math.isinf(r) or r < scan.range_min or r > scan.range_max:
                         continue
-                    if r < min_r:
+                    if r < min_r and r <= d_detect:
                         min_r = r
                         ray_ang = syaw + (scan.angle_min + j * scan.angle_increment)
                         best_dir = (-math.cos(ray_ang), -math.sin(ray_ang))
@@ -445,9 +513,16 @@ class Khepera4Mapper(Node):
 
         self.fused_odom_pub.publish(fused)
 
-        # Broadcast dynamic map -> odom transform: T(map -> odom) = T(map -> base) * T(odom -> base)^-1
-        # This keeps the visual model in RViz (fixed frame: map) strictly aligned with the filtered map pose,
-        # completely preventing wall-collision visual penetration and sensor beam tearing.
+        self._broadcast_map_tf(stamp)
+
+    def _broadcast_map_tf(self, stamp):
+        """Broadcast dynamic map -> odom transform: T(map -> odom) = T(map -> base) * T(odom -> base)^-1.
+
+        This keeps the visual model in RViz (fixed frame: map) strictly aligned with the filtered map pose,
+        completely preventing wall-collision visual penetration and sensor beam tearing.
+        """
+        if not self.publish_map_tf:
+            return
         ox = self.last_odom_x if self.last_odom_x is not None else self.robot_x
         oy = self.last_odom_y if self.last_odom_y is not None else self.robot_y
         oyaw = self.last_odom_yaw if self.last_odom_yaw is not None else self.robot_yaw
@@ -542,9 +617,16 @@ class Khepera4Mapper(Node):
             if self.clamp_odometry_slip and abs(delta_s) > self.max_step_delta_s:
                 delta_s = math.copysign(min(abs(delta_s), 0.25 / 50.0 * 1.5), delta_s)
 
-            # Raw displacement vector along fused IMU yaw
-            dx_raw = delta_s * math.cos(self.robot_yaw)
-            dy_raw = delta_s * math.sin(self.robot_yaw)
+            now_sec = self.get_clock().now().nanoseconds * 1e-9 if (msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0) else (msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+
+            # Wheel acceleration estimation from discrete odometry
+            dt_odom = (now_sec - self.last_odom_time) if self.last_odom_time is not None else 0.02
+            if not (0.001 <= dt_odom <= 0.25):
+                dt_odom = 0.02
+            v_wheel = delta_s / dt_odom
+            self.wheel_accel_x = (v_wheel - self.last_wheel_v) / dt_odom
+            self.last_wheel_v = v_wheel
+            self.last_odom_time = now_sec
 
             # Check IR proximity across all 8 IR ring sensors
             min_ir_range = float('inf')
@@ -557,36 +639,64 @@ class Khepera4Mapper(Node):
                             if r < min_ir_range:
                                 min_ir_range = r
 
-            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            # Check front sensor range (IR 0 at +10°, IR 7 at -10°)
+            min_front_range = float('inf')
+            for i in (0, 7):
+                scan = self.latest_ir[i]
+                if scan is not None and scan.ranges:
+                    for r in scan.ranges:
+                        if (not math.isnan(r) and not math.isinf(r) and
+                                scan.range_min <= r <= scan.range_max):
+                            if r < min_front_range:
+                                min_front_range = r
+
+            if min_front_range < float('inf'):
+                self.front_range_history.append((now_sec, min_front_range, delta_s))
+
+            effective_cmd_x = self.cmd_linear_x
+            if (now_sec - self.last_cmd_vel_time) > 0.5 and self.last_cmd_vel_time > 0.0:
+                effective_cmd_x = 0.0
+
+            # 1. Front IR Gradient vs. Encoder Delta Check (Multi-sensor rate-of-change)
+            is_ir_gradient_slip = False
+            if (self.enable_ir_gradient_slip_check and delta_s > self.ir_gradient_min_delta_s and
+                    min_front_range <= self.ir_gradient_proximity_thresh):
+                window_old = None
+                for t_entry, d_entry, s_entry in self.front_range_history:
+                    if (now_sec - t_entry) >= self.ir_gradient_window_s:
+                        window_old = (t_entry, d_entry)
+                        break
+                if window_old is not None:
+                    delta_d_sensor = min_front_range - window_old[1]
+                    if (effective_cmd_x > self.ir_gradient_min_cmd_v or delta_s > 0.002):
+                        if delta_d_sensor >= -self.ir_gradient_max_closing_rate:
+                            is_ir_gradient_slip = True
+
+            # 2. IMU Accelerometer Sanity Gate
+            is_imu_accel_slip = False
+            if (self.enable_imu_accel_gate and self.has_imu and self.imu_valid and self.last_imu_time is not None and
+                    (min_ir_range <= self.imu_accel_proximity_thresh or min_front_range <= self.imu_accel_proximity_thresh)):
+                if delta_s > 0.001 and self.wheel_accel_x > 0.50:
+                    if self.ax_dynamic_filtered < self.imu_accel_gate_threshold:
+                        is_imu_accel_slip = True
+
+            self.is_wheel_slipping = bool(is_ir_gradient_slip or is_imu_accel_slip)
+
+            # Raw displacement vector along fused IMU yaw
+            dx_raw = delta_s * math.cos(self.robot_yaw)
+            dy_raw = delta_s * math.sin(self.robot_yaw)
+
             is_near_contact = (min_ir_range < self.contact_dist_thresh)
+            self.is_near_contact = bool(is_near_contact)
             is_recent_impact = (now_sec - self.last_impact_time < 0.25)
             is_stalled_proximity = (
                 min_ir_range <= self.slip_dist_thresh and
-                (self.cmd_linear_x > 0.05 or delta_s > 0.001)
+                (effective_cmd_x > 0.05 or delta_s > 0.001)
             )
 
-            # Check perimeter wall boundary proximity (within 80mm of arena limits)
-            is_at_perimeter = False
-            perim_normal = None
-            if self.robot_x >= (self.arena_max_x - 0.08) and (dx > 0 or dx_raw > 0 or min_ir_range < 0.04):
-                is_at_perimeter = True
-                perim_normal = (-1.0, 0.0)
-            elif self.robot_x <= (self.arena_min_x + 0.08) and (dx < 0 or dx_raw < 0 or min_ir_range < 0.04):
-                is_at_perimeter = True
-                perim_normal = (1.0, 0.0)
-            elif self.robot_y >= (self.arena_max_y - 0.08) and (dy > 0 or dy_raw > 0 or min_ir_range < 0.04):
-                is_at_perimeter = True
-                perim_normal = (0.0, -1.0)
-            elif self.robot_y <= (self.arena_min_y + 0.08) and (dy < 0 or dy_raw < 0 or min_ir_range < 0.04):
-                is_at_perimeter = True
-                perim_normal = (0.0, 1.0)
-
             # Surface normal and tangential projection
-            if is_near_contact or is_recent_impact or is_stalled_proximity or is_at_perimeter:
-                if is_at_perimeter and perim_normal is not None:
-                    normal = perim_normal
-                else:
-                    normal = self._compute_surface_normal()
+            if is_near_contact or is_recent_impact or is_stalled_proximity or self.is_wheel_slipping:
+                normal = self._compute_surface_normal()
 
                 if normal is not None:
                     nx, ny = normal
@@ -595,8 +705,7 @@ class Khepera4Mapper(Node):
 
                     d_par_raw = dx_raw * tx + dy_raw * ty
                     p_into_raw = -(dx_raw * nx + dy_raw * ny)
-                    p_into_odom = -(dx * nx + dy * ny)
-                    p_into = max(p_into_raw, p_into_odom)
+                    p_into = p_into_raw
 
                     if p_into > 0.0:
                         # Strictly nullify perpendicular penetration
@@ -606,16 +715,12 @@ class Khepera4Mapper(Node):
                         )
 
                         # Head-on stall: clamp advance to zero within <= 0.03m of contact
-                        # When pushing into a wall (p_into > 0), Coulomb friction and high lateral
-                        # wheel scrub resistance prevent rapid sideways sliding when driving straight into it.
+                        # When pushing straight into a wall (tangent_ratio < 0.18, within ~10 deg of head-on)
                         if tangent_ratio < 0.18:
                             delta_px = 0.0
                             delta_py = 0.0
                         else:
-                            # Smoothstep slip ramp from 0.18 (nearly straight-on) to 0.45 (glancing):
-                            # Eliminates tangential slide runaway when driving nearly straight into a wall,
-                            # allowing only a realistic small slip while preserving full tangential tracking
-                            # at glancing angles (>= 0.45, e.g. 30° - 45° glancing scrapes).
+                            # Glancing angle: smooth sliding along wall without sticking
                             if tangent_ratio >= 0.45:
                                 slip_factor = 1.0
                             else:
@@ -625,24 +730,42 @@ class Khepera4Mapper(Node):
                             delta_px = eff_tangent * tx
                             delta_py = eff_tangent * ty
                     else:
-                        # Moving away from or parallel to surface (e.g. reverse motion)
+                        # Moving away from or parallel to surface (e.g. reverse motion or tangential sliding)
                         delta_px = dx_raw
                         delta_py = dy_raw
                 else:
-                    # Near contact or impact but no normal: clamp forward advancement
-                    if is_near_contact or is_recent_impact:
+                    # Near contact, impact, or slip but no normal found:
+                    # Never unconditionally zero displacement without confirmed surface contact!
+                    if (is_near_contact or is_recent_impact) and min_ir_range < self.contact_dist_thresh:
                         if delta_s > 0.0:
                             delta_px = 0.0
                             delta_py = 0.0
                         else:
                             delta_px = dx_raw
                             delta_py = dy_raw
+                    elif self.is_wheel_slipping and min_ir_range < self.slip_dist_thresh:
+                        # Scaled progression during close unoriented slip
+                        delta_px = dx_raw * 0.20
+                        delta_py = dy_raw * 0.20
                     else:
                         delta_px = dx_raw
                         delta_py = dy_raw
             else:
                 delta_px = dx_raw
                 delta_py = dy_raw
+
+            # Axis-aligned arena perimeter wall protection:
+            # Strictly prevent motion penetrating into outer arena walls,
+            # while fully permitting motion parallel to or away from walls and corners.
+            if self.robot_x >= (self.arena_max_x - 0.01) and delta_px > 0.0:
+                delta_px = 0.0
+            elif self.robot_x <= (self.arena_min_x + 0.01) and delta_px < 0.0:
+                delta_px = 0.0
+
+            if self.robot_y >= (self.arena_max_y - 0.01) and delta_py > 0.0:
+                delta_py = 0.0
+            elif self.robot_y <= (self.arena_min_y + 0.01) and delta_py < 0.0:
+                delta_py = 0.0
 
             new_x = self.robot_x + delta_px
             new_y = self.robot_y + delta_py
@@ -740,11 +863,24 @@ class Khepera4Mapper(Node):
             std_dev = float(np.std(self.accel_z_buffer))
             self.current_roughness = int(np.clip(std_dev * 100.0, 0, 85))
 
-        # 3. IMU linear acceleration & jerk impact detection (||j|| > 40 m/s^3 or ax < -1.2 m/s^2)
+        # 3. IMU linear acceleration & jerk impact detection (||j|| > 40 m/s^3 or ax_dynamic < -1.2 m/s^2)
         if msg.header.stamp.sec > 0 or msg.header.stamp.nanosec > 0:
             now_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         else:
             now_t = self.get_clock().now().nanoseconds * 1e-9
+
+        # Gravity compensation for body X-axis dynamic forward acceleration:
+        # Accelerometer measures specific force a_meas = a_dynamic - g_body.
+        # On a pitch incline theta, g_x = -g * sin(theta), so a_meas = a_dynamic + g * sin(pitch).
+        if self.imu_valid:
+            sin_p = 2.0 * (q.w * q.y - q.z * q.x)
+            sin_p = max(-1.0, min(1.0, sin_p))
+            q_pitch = math.asin(sin_p)
+            ax_dynamic = ax + 9.80665 * math.sin(q_pitch)
+        else:
+            ax_dynamic = ax
+
+        self.ax_dynamic_filtered = 0.35 * ax_dynamic + 0.65 * self.ax_dynamic_filtered
 
         if self.last_imu_time is not None:
             dt = now_t - self.last_imu_time
@@ -761,7 +897,11 @@ class Khepera4Mapper(Node):
         self.last_ay = ay
         self.last_imu_time = now_t
 
-        if self.imu_jerk > 40.0 or (ax < -1.2 and self.cmd_linear_x > 0.05):
+        effective_cmd_x = self.cmd_linear_x
+        if (now_t - self.last_cmd_vel_time) > 0.5 and self.last_cmd_vel_time > 0.0:
+            effective_cmd_x = 0.0
+
+        if self.imu_jerk > 40.0 or (ax_dynamic < -1.2 and effective_cmd_x > 0.05):
             self.last_impact_time = now_t
 
     def us_callback(self, index: int, msg: LaserScan):
@@ -903,6 +1043,188 @@ class Khepera4Mapper(Node):
     # ==========================================================================
     # Task 1.b, 1.c, 1.d: Map Updates & Publishing
     # ==========================================================================
+    # Phase 2: 2D Correlative Scan Matching (CSM) & Pose Correction
+    # ==========================================================================
+
+    def _collect_scan_endpoints(self) -> List[Tuple[float, float]]:
+        """Collect valid obstacle hit points in base_footprint frame from IR and US sensors."""
+        endpoints = []
+        for i, mount in enumerate(IR_MOUNTS):
+            scan = self.latest_ir[i]
+            if scan is None or not scan.ranges:
+                continue
+            sx, sy, syaw = mount
+            for j, r in enumerate(scan.ranges):
+                if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                    ray_ang = syaw + (scan.angle_min + j * scan.angle_increment)
+                    px = sx + r * math.cos(ray_ang)
+                    py = sy + r * math.sin(ray_ang)
+                    endpoints.append((px, py))
+
+        for i, mount in enumerate(US_MOUNTS):
+            scan = self.latest_us[i]
+            if scan is None or not scan.ranges:
+                continue
+            sx, sy, syaw = mount
+            for j, r in enumerate(scan.ranges):
+                if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                    if r > 1.2:
+                        continue
+                    ray_ang = syaw + (scan.angle_min + j * scan.angle_increment)
+                    px = sx + r * math.cos(ray_ang)
+                    py = sy + r * math.sin(ray_ang)
+                    endpoints.append((px, py))
+        return endpoints
+
+    def _compute_pose_quality(self) -> float:
+        """Compute continuous pose quality score Q in [0.15, 1.0].
+
+        Downweights obstacle reinforcement during wheel slip or contact,
+        preventing phantom/ghost obstacles from establishing solid belief.
+        """
+        penalty = 0.0
+        if self.is_wheel_slipping:
+            penalty += 0.70
+        if self.is_near_contact:
+            penalty += 0.35
+        if abs(self.wheel_accel_x) > 0.50:
+            penalty += min(0.30, (abs(self.wheel_accel_x) - 0.50) / 5.0 * 0.30)
+        return float(np.clip(1.0 - penalty, 0.15, 1.0))
+
+    def refine_pose_with_scan_matching(self) -> bool:
+        """Refine robot pose via 2D Correlative Scan Matching with anti-jitter smoothing."""
+        if not self.enable_scan_matching or not self.has_odom:
+            return False
+
+        # Do not run CSM during active wheel slip or collision contact:
+        # Prevents matching against phantom obstacles and feedback loops
+        if self.is_wheel_slipping or self.is_near_contact:
+            return False
+
+        endpoints = self._collect_scan_endpoints()
+        if len(endpoints) < self.csm_min_valid_hits:
+            return False
+
+        # Only match if map contains sufficient confirmed obstacle cells
+        if np.count_nonzero(self.log_odds >= self.l_occ) < 10:
+            return False
+
+        seed_x, seed_y, seed_yaw = self.robot_x, self.robot_y, self.robot_yaw
+        pts_b = np.array(endpoints, dtype=np.float32)
+
+        d_trans = self.csm_search_dist
+        step_trans = self.csm_trans_step
+
+        # When IMU heading is valid, lock yaw search to 0 to prevent 50Hz/3Hz heading war & jitter
+        has_stable_imu = bool(self.use_imu_yaw and self.has_imu and self.imu_valid)
+        if has_stable_imu:
+            dyaw_vals = np.array([0.0], dtype=np.float32)
+        else:
+            d_yaw = self.csm_search_angle
+            step_yaw = self.csm_angle_step
+            dyaw_vals = np.arange(-d_yaw, d_yaw + 1e-5, step_yaw, dtype=np.float32)
+
+        dx_vals = np.arange(-d_trans, d_trans + 1e-5, step_trans, dtype=np.float32)
+        dy_vals = np.arange(-d_trans, d_trans + 1e-5, step_trans, dtype=np.float32)
+
+        grid_dx, grid_dy, grid_dyaw = np.meshgrid(dx_vals, dy_vals, dyaw_vals, indexing='ij')
+        cand_dx = grid_dx.flatten()
+        cand_dy = grid_dy.flatten()
+        cand_dyaw = grid_dyaw.flatten()
+
+        cand_x = seed_x + cand_dx
+        cand_y = seed_y + cand_dy
+        cand_yaw = np.array([normalize_angle(seed_yaw + y) for y in cand_dyaw], dtype=np.float32)
+
+        cos_y = np.cos(cand_yaw)
+        sin_y = np.sin(cand_yaw)
+
+        # Vectorized coordinate transformation to world coordinates
+        px_b = pts_b[:, 0][None, :]
+        py_b = pts_b[:, 1][None, :]
+        cos_y_k = cos_y[:, None]
+        sin_y_k = sin_y[:, None]
+
+        w_x = cand_x[:, None] + px_b * cos_y_k - py_b * sin_y_k
+        w_y = cand_y[:, None] + px_b * sin_y_k + py_b * cos_y_k
+
+        # Map to grid cell indices
+        cols = np.floor((w_x - self.origin_x) / self.res).astype(np.int32)
+        rows = np.floor((w_y - self.origin_y) / self.res).astype(np.int32)
+
+        valid_mask = (cols >= 0) & (cols < self.width) & (rows >= 0) & (rows < self.height)
+        safe_cols = np.clip(cols, 0, self.width - 1)
+        safe_rows = np.clip(rows, 0, self.height - 1)
+
+        # Retrieve log-odds belief values
+        cell_vals = self.log_odds[safe_rows, safe_cols]
+        scores_per_point = np.where(valid_mask, np.clip(cell_vals, -self.l_free, self.l_occ * 2.0), -self.l_free)
+        total_scores = np.sum(scores_per_point, axis=1)
+
+        # Locate seed pose score (dx=0, dy=0, dyaw=0)
+        seed_mask = (np.abs(cand_dx) < 1e-4) & (np.abs(cand_dy) < 1e-4) & (np.abs(cand_dyaw) < 1e-4)
+        seed_indices = np.where(seed_mask)[0]
+        seed_score = total_scores[seed_indices[0]] if len(seed_indices) > 0 else total_scores[0]
+
+        best_idx = int(np.argmax(total_scores))
+        best_score = total_scores[best_idx]
+
+        # Analyze spatial eigenvalue conditioning of scan endpoints (aperture problem)
+        # When scan points form a single line (e.g. driving along a straight wall),
+        # translation along the wall is degenerate and unobservable.
+        # Project displacement strictly onto the wall normal to eliminate jagged zigzag jitter!
+        raw_dx = float(cand_dx[best_idx])
+        raw_dy = float(cand_dy[best_idx])
+
+        corr_dx = raw_dx
+        corr_dy = raw_dy
+        if len(pts_b) >= 3:
+            cov = np.cov(pts_b, rowvar=False)
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            if float(eigvals[1]) > 1e-5 and (float(eigvals[0]) / float(eigvals[1])) < 0.08:
+                # 1D single wall geometry: normal to the wall in robot body frame
+                n_b = eigvecs[:, 0]
+                cos_s = math.cos(seed_yaw)
+                sin_s = math.sin(seed_yaw)
+                # Rotate normal to map frame
+                nx_m = float(n_b[0] * cos_s - n_b[1] * sin_s)
+                ny_m = float(n_b[0] * sin_s + n_b[1] * cos_s)
+                norm_m = math.hypot(nx_m, ny_m)
+                if norm_m > 1e-4:
+                    nx_m /= norm_m
+                    ny_m /= norm_m
+                    # Project displacement purely onto the wall normal; tangential drift is zeroed
+                    proj = raw_dx * nx_m + raw_dy * ny_m
+                    corr_dx = proj * nx_m
+                    corr_dy = proj * ny_m
+
+        disp = float(math.hypot(corr_dx, corr_dy))
+
+        if best_score > (seed_score + self.csm_score_thresh) and disp >= self.csm_deadband:
+            target_x = float(seed_x + corr_dx)
+            target_y = float(seed_y + corr_dy)
+            target_yaw = float(cand_yaw[best_idx])
+
+            # Exponential moving average (alpha smoothing) to eliminate 1cm staircase jumps
+            alpha = self.csm_alpha_smooth
+            smoothed_x = (1.0 - alpha) * self.robot_x + alpha * target_x
+            smoothed_y = (1.0 - alpha) * self.robot_y + alpha * target_y
+
+            # Apply arena perimeter bounds
+            self.robot_x = float(np.clip(smoothed_x, self.arena_min_x, self.arena_max_x))
+            self.robot_y = float(np.clip(smoothed_y, self.arena_min_y, self.arena_max_y))
+            if not has_stable_imu:
+                self.robot_yaw = target_yaw
+
+            # Broadcast updated TF immediately
+            now_stamp = self.get_clock().now().to_msg()
+            self._broadcast_map_tf(now_stamp)
+            return True
+        return False
+
+    # ==========================================================================
+    # Task 1.b, 1.c, 1.d: Map Updates & Publishing
+    # ==========================================================================
 
     def update_and_publish_maps(self):
         """Update 2D occupancy grid, 2.5D elevation grid, and surface grid, then publish."""
@@ -910,6 +1232,10 @@ class Khepera4Mapper(Node):
             return
 
         now = self.get_clock().now().to_msg()
+
+        # Phase 2: Refine robot pose with 2D Correlative Scan Matching before painting rays
+        if self.enable_scan_matching:
+            self.refine_pose_with_scan_matching()
 
         self._update_occupancy_rays()
         self._update_footprint_maps()
@@ -943,21 +1269,47 @@ class Khepera4Mapper(Node):
                 wey = max(self.arena_min_y, min(self.arena_max_y, wey))
                 c1, r1 = self.world_to_grid(wex, wey)
 
+                q_score = self._compute_pose_quality()
                 cells = bresenham_line(c0, r0, c1, r1)
                 for k, (col, row) in enumerate(cells):
                     if not self.is_valid_cell(col, row):
                         break
                     if is_hit and (k == len(cells) - 1):
-                        self.log_odds[row, col] = min(
-                            self.l_max, self.log_odds[row, col] + self.l_occ
-                        )
+                        delta_l = q_score * self.l_occ
+                        if self.is_wheel_slipping or q_score < 0.60:
+                            # Capped obstacle reinforcement during wheel slip
+                            self.log_odds[row, col] = min(
+                                self.l_occ, self.log_odds[row, col] + delta_l
+                            )
+                        else:
+                            self.log_odds[row, col] = min(
+                                self.l_max, self.log_odds[row, col] + delta_l
+                            )
+                            self.hit_count[row, col] = min(255, int(self.hit_count[row, col]) + 1)
                         break
-                    # Stop ray on existing occupied cell (cannot see through walls)
+
+                    # Check if cell was previously believed to be occupied
                     if self.log_odds[row, col] >= self.l_occ:
-                        break
-                    self.log_odds[row, col] = max(
-                        self.l_min, self.log_odds[row, col] - self.l_free
-                    )
+                        # Erode the cell with incoming free space observation
+                        delta_free = q_score * self.l_free
+                        self.log_odds[row, col] = max(
+                            self.l_min, self.log_odds[row, col] - delta_free
+                        )
+                        if self.hit_count[row, col] > 0:
+                            self.hit_count[row, col] -= 1
+
+                        # If cell is confirmed solid wall, stop ray from penetrating behind it on this pass
+                        is_solid_wall = (
+                            self.hit_count[row, col] >= self.hit_count_confirm_threshold or
+                            self.log_odds[row, col] >= self.l_occ
+                        )
+                        if is_solid_wall:
+                            break
+                    else:
+                        delta_free = q_score * self.l_free
+                        self.log_odds[row, col] = max(
+                            self.l_min, self.log_odds[row, col] - delta_free
+                        )
 
         # Collect minimum detected obstacle distance from IR sensors
         min_ir_dist = 2.0
@@ -997,38 +1349,74 @@ class Khepera4Mapper(Node):
                 wey = max(self.arena_min_y, min(self.arena_max_y, wey))
                 c1, r1 = self.world_to_grid(wex, wey)
 
+                q_score = self._compute_pose_quality()
                 cells = bresenham_line(c0, r0, c1, r1)
                 for k, (col, row) in enumerate(cells):
                     if not self.is_valid_cell(col, row):
                         break
                     if is_hit and (k == len(cells) - 1):
-                        self.log_odds[row, col] = min(
-                            self.l_max, self.log_odds[row, col] + self.l_occ
-                        )
+                        delta_l = q_score * self.l_occ
+                        if self.is_wheel_slipping or q_score < 0.60:
+                            # Capped obstacle reinforcement during wheel slip
+                            self.log_odds[row, col] = min(
+                                self.l_occ, self.log_odds[row, col] + delta_l
+                            )
+                        else:
+                            self.log_odds[row, col] = min(
+                                self.l_max, self.log_odds[row, col] + delta_l
+                            )
+                            self.hit_count[row, col] = min(255, int(self.hit_count[row, col]) + 1)
                         break
-                    # Stop ray on existing occupied cell (cannot see through walls)
+
+                    # Check if cell was previously believed to be occupied
                     if self.log_odds[row, col] >= self.l_occ:
-                        break
-                    self.log_odds[row, col] = max(
-                        self.l_min, self.log_odds[row, col] - self.l_free
-                    )
+                        # Erode the cell with incoming free space observation
+                        delta_free = q_score * self.l_free
+                        self.log_odds[row, col] = max(
+                            self.l_min, self.log_odds[row, col] - delta_free
+                        )
+                        if self.hit_count[row, col] > 0:
+                            self.hit_count[row, col] -= 1
+
+                        # If cell is confirmed solid wall, stop ray from penetrating behind it on this pass
+                        is_solid_wall = (
+                            self.hit_count[row, col] >= self.hit_count_confirm_threshold or
+                            self.log_odds[row, col] >= self.l_occ
+                        )
+                        if is_solid_wall:
+                            break
+                    else:
+                        delta_free = q_score * self.l_free
+                        self.log_odds[row, col] = max(
+                            self.l_min, self.log_odds[row, col] - delta_free
+                        )
 
     def _update_footprint_maps(self):
-        """Update elevation map and surface roughness map for cells covered by robot footprint."""
+        """Update elevation map, roughness map, and carve free space under robot footprint."""
         cr, rr = self.world_to_grid(self.robot_x, self.robot_y)
         robot_radius_cells = int(math.ceil(0.070 / self.res))
+        carve_radius_sq = (0.060) ** 2  # 60 mm inner radius protects perimeter walls during glancing scrapes
 
         slope_val = int(np.clip(round(self.current_slope_deg), 0, 100))
         roughness_val = self.current_roughness
 
+        can_carve = self.enable_footprint_carving and not (self.is_wheel_slipping and self.is_near_contact)
+
         for dcol in range(-robot_radius_cells, robot_radius_cells + 1):
             for drow in range(-robot_radius_cells, robot_radius_cells + 1):
-                if (dcol * self.res) ** 2 + (drow * self.res) ** 2 <= (0.070 ** 2):
+                dist_sq = (dcol * self.res) ** 2 + (drow * self.res) ** 2
+                if dist_sq <= (0.070 ** 2):
                     c = cr + dcol
                     r = rr + drow
                     if self.is_valid_cell(c, r):
                         self.elevation_grid[r, c] = slope_val
                         if self.surface_grid[r, c] != 100:
+                            self.surface_grid[r, c] = roughness_val
+                        if can_carve and dist_sq <= carve_radius_sq:
+                            # Erase any phantom / ghost wall that the robot physically traverses
+                            if self.log_odds[r, c] > -self.l_free:
+                                self.log_odds[r, c] = -self.l_free
+                            self.hit_count[r, c] = 0
                             self.surface_grid[r, c] = roughness_val
 
     def _build_occupancy_grid_data(self) -> List[int]:
@@ -1170,6 +1558,8 @@ class Khepera4Mapper(Node):
             new_log_odds[data_restored == 0] = self.l_max    # Occupied
 
             self.log_odds = new_log_odds
+            self.hit_count.fill(0)
+            self.hit_count[new_log_odds == self.l_max] = 20
 
             now = self.get_clock().now().to_msg()
             self._publish_grid(self.map_pub, self._build_occupancy_grid_data(), now)
@@ -1186,6 +1576,7 @@ class Khepera4Mapper(Node):
     def clear_map_callback(self, request, response):
         """Reset map, elevation map, surface map, and trajectory memory."""
         self.log_odds = np.zeros((self.height, self.width), dtype=np.float32)
+        self.hit_count.fill(0)
         self.elevation_grid = np.full((self.height, self.width), -1, dtype=np.int8)
         self.surface_grid = np.full((self.height, self.width), -1, dtype=np.int8)
         if self.has_odom:

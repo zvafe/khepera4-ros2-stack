@@ -599,3 +599,116 @@ def test_f13_boundary_urdf_inertial_matrices_positive_definite():
     assert (ixx + iyy) >= izz
     assert (ixx + izz) >= iyy
     assert (iyy + izz) >= ixx
+
+
+def test_dashboard_user_goal_and_path_dispatch():
+    """Verify MappingRosWorker dispatches user goals, user paths, and clear path."""
+    worker = MappingRosWorker()
+    worker.init_ros()
+    try:
+        # Verify publishers and subscriptions are initialized
+        assert worker.user_goal_pub is not None
+        assert worker.user_path_pub is not None
+        assert worker.clear_path_pub is not None
+
+        # Verify send_user_goal does not raise and properly packages message
+        worker.send_user_goal(1.25, -0.75)
+
+        # Verify send_user_path packages multiple points
+        pts = [(0.0, 0.0), (0.5, 0.5), (1.0, 0.0)]
+        worker.send_user_path(pts)
+
+        # Verify send_clear_path sends True
+        worker.send_clear_path()
+
+        # Verify active_goal_received signal triggers
+        received_goals = []
+        worker.active_goal_received.connect(lambda x, y: received_goals.append((x, y)))
+        from geometry_msgs.msg import PointStamped
+        ps = PointStamped()
+        ps.point.x = 1.5
+        ps.point.y = -1.2
+        worker._active_goal_cb(ps)
+        assert len(received_goals) == 1
+        assert math.isclose(received_goals[0][0], 1.5)
+        assert math.isclose(received_goals[0][1], -1.2)
+    finally:
+        worker.stop()
+        if worker.node:
+            worker.node.destroy_node()
+
+
+def test_dashboard_timers_active_and_plot_initialized():
+    """Verify teleop_timer, plot_timer, and dark theme map plot are active upon window creation."""
+    from PyQt5.QtWidgets import QApplication
+    from khepera4_control.mapping_dashboard import MappingDashboardWindow
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MappingDashboardWindow(ros_worker=None)
+    try:
+        assert hasattr(window, 'teleop_timer'), 'Missing teleop_timer'
+        assert hasattr(window, 'plot_timer'), 'Missing plot_timer'
+        assert window.teleop_timer.isActive(), 'teleop_timer should be running'
+        assert window.plot_timer.isActive(), 'plot_timer should be running'
+
+        # Verify dark theme axes facecolor (not default white rectangle)
+        facecolor = window.ax_map.get_facecolor()
+        # Matplotlib facecolor RGBA: '#0f172a' -> (0.0588, 0.0902, 0.1647, 1.0)
+        assert facecolor[0] < 0.2 and facecolor[1] < 0.2 and facecolor[2] < 0.3, \
+            f'Expected dark theme facecolor, got {facecolor}'
+    finally:
+        window.close()
+
+
+def test_dashboard_event_filter_wasd_teleop():
+    """Verify application eventFilter intercepts WASD keys and updates keys_pressed."""
+    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+    from khepera4_control.mapping_dashboard import MappingDashboardWindow
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MappingDashboardWindow(ros_worker=None)
+    try:
+        # Simulate W key press
+        press_w = QKeyEvent(QEvent.KeyPress, Qt.Key_W, Qt.NoModifier)
+        handled = window.eventFilter(window, press_w)
+        assert handled is True
+        assert Qt.Key_W in window.keys_pressed
+
+        # Simulate W key release
+        release_w = QKeyEvent(QEvent.KeyRelease, Qt.Key_W, Qt.NoModifier)
+        handled_rel = window.eventFilter(window, release_w)
+        assert handled_rel is True
+        assert Qt.Key_W not in window.keys_pressed
+    finally:
+        window.close()
+
+
+def test_dashboard_imu_upright_robustness():
+    """Verify upright robot with normal or momentary az fluctuations does not lock teleop."""
+    from PyQt5.QtWidgets import QApplication
+    from khepera4_control.mapping_dashboard import MappingDashboardWindow
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MappingDashboardWindow(ros_worker=None)
+    try:
+        # Upright robot (flat ground: pitch=0, roll=0, az=9.81)
+        window.on_imu_received(0.0, 0.0, 9.81)
+        assert not window.is_turned_over
+        assert "LOCKED" not in window.lbl_teleop_cmd.text()
+
+        # Free-fall or hop: az dips to 0.5 momentarily while slope is 0.0 (upright)
+        window.on_imu_received(0.0, 0.0, 0.5)
+        assert not window.is_turned_over, 'Momentary az dip while level must not trigger rollover'
+        assert "LOCKED" not in window.lbl_teleop_cmd.text()
+
+        # Severe tilt > 70 deg: must trigger turned over
+        window.on_imu_received(75.0, 0.0, 2.0)
+        assert window.is_turned_over
+        assert "LOCKED" in window.lbl_teleop_cmd.text()
+
+        # Recovery back to level ground
+        window.on_imu_received(0.0, 0.0, 9.81)
+        assert not window.is_turned_over
+        assert "LOCKED" not in window.lbl_teleop_cmd.text()
+    finally:
+        window.close()
+

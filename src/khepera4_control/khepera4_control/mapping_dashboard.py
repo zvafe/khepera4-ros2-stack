@@ -23,6 +23,7 @@ Features:
 import collections
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -36,7 +37,7 @@ from matplotlib.patches import Circle, FancyArrow, Polygon
 import matplotlib.pyplot as plt
 import numpy as np
 
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox,
@@ -45,9 +46,9 @@ from PyQt5.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget
 )
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from khepera4_control.common import euler_from_quaternion
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -227,6 +228,41 @@ QPushButton#auto_explore_active:pressed {
     padding-bottom: 6px;
 }
 
+/* User-Guided Exploration Buttons (Draw Path, Set Target, Clear) */
+QPushButton#user_draw_btn {
+    background-color: #1e293b;
+    border: 1px solid #0284c7;
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: #38bdf8;
+    font-size: 10px;
+    font-weight: bold;
+}
+QPushButton#user_draw_btn:hover {
+    background-color: #0369a1;
+    border-color: #38bdf8;
+    color: #ffffff;
+}
+QPushButton#user_draw_btn:checked {
+    background-color: #0284c7;
+    border-color: #7dd3fc;
+    color: #ffffff;
+}
+QPushButton#user_clear_btn {
+    background-color: #27272a;
+    border: 1px solid #71717a;
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: #e4e4e7;
+    font-size: 10px;
+    font-weight: bold;
+}
+QPushButton#user_clear_btn:hover {
+    background-color: #52525b;
+    border-color: #a1a1aa;
+    color: #ffffff;
+}
+
 /* Persistence Buttons (Green, Slate, Amber) */
 QPushButton#save_btn {
     background-color: #064e3b;
@@ -391,12 +427,17 @@ class MappingRosWorker(QObject):
     turned_over_received = pyqtSignal(bool)
     feedback_received = pyqtSignal(str)
     explorer_state_received = pyqtSignal(bool)
+    active_goal_received = pyqtSignal(float, float)
+    screenshot_requested = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.node: Optional[Node] = None
         self.cmd_pub = None
         self.explorer_enable_pub = None
+        self.user_goal_pub = None
+        self.user_path_pub = None
+        self.clear_path_pub = None
         self.save_map_cli = None
         self.load_map_cli = None
         self.clear_map_cli = None
@@ -405,6 +446,8 @@ class MappingRosWorker(QObject):
         self.toggle_exp_cli = None
         self.is_running = True
         self.last_fused_odom_time = 0.0
+        self._explorer_proc: Optional[subprocess.Popen] = None
+        self.auto_spawn_explorer: bool = False
 
     def _get_now(self) -> float:
         if self.node and self.node.context.ok():
@@ -415,6 +458,8 @@ class MappingRosWorker(QObject):
         if not rclpy.ok():
             rclpy.init()
         self.node = Node('khepera4_mapping_dashboard_node')
+        if not self.node.has_parameter('use_sim_time'):
+            self.node.declare_parameter('use_sim_time', False)
 
         qos_latched = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -423,9 +468,12 @@ class MappingRosWorker(QObject):
             depth=1
         )
 
-        # 1. Direct Single-Robot Command Publisher
+        # 1. Direct Single-Robot Command Publisher & User Exploration Publishers
         self.cmd_pub = self.node.create_publisher(Twist, '/cmd_vel', 10)
         self.explorer_enable_pub = self.node.create_publisher(Bool, '/explorer/enable', qos_latched)
+        self.user_goal_pub = self.node.create_publisher(PoseStamped, '/explorer/user_goal', 10)
+        self.user_path_pub = self.node.create_publisher(Path, '/explorer/user_path', 10)
+        self.clear_path_pub = self.node.create_publisher(Bool, '/explorer/clear_path', 10)
 
         # 2. Service Clients for Spatial Persistence & Autonomy & Recenter
         self.save_map_cli = self.node.create_client(Trigger, '/save_map')
@@ -446,7 +494,10 @@ class MappingRosWorker(QObject):
         self.node.create_subscription(LaserScan, '/khepera4/scan', lambda m: self.scan_received.emit(m), 10)
         self.node.create_subscription(Bool, '/cliff_alert', lambda m: self.cliff_alert_received.emit(m.data), 10)
         self.node.create_subscription(Bool, '/khepera4/turned_over', lambda m: self.turned_over_received.emit(m.data), 10)
-        self.node.create_subscription(Bool, '/explorer/enable', lambda m: self.explorer_state_received.emit(m.data), qos_latched)
+        self.node.create_subscription(Bool, '/explorer/status', lambda m: self.explorer_state_received.emit(m.data), qos_latched)
+        self.node.create_subscription(Bool, '/explorer/enable', lambda m: self.explorer_state_received.emit(m.data), 10)
+        self.node.create_subscription(PointStamped, '/explorer/active_goal', self._active_goal_cb, 10)
+        self.node.create_subscription(String, '/dashboard/screenshot', lambda m: self.screenshot_requested.emit(m.data), 10)
 
     @property
     def using_fused_odom(self) -> bool:
@@ -496,6 +547,34 @@ class MappingRosWorker(QObject):
             msg.angular.z = float(angular_w)
             self.cmd_pub.publish(msg)
 
+    def _ensure_explorer_running(self) -> bool:
+        """Auto-spawn reactive_explorer if it is not currently running."""
+        if not self.auto_spawn_explorer:
+            return False
+        if self._explorer_proc is not None and self._explorer_proc.poll() is None:
+            return True
+        try:
+            use_sim = False
+            if self.node and self.node.has_parameter('use_sim_time'):
+                use_sim = bool(self.node.get_parameter('use_sim_time').value)
+            cmd = [
+                'ros2', 'run', 'khepera4_control', 'reactive_explorer',
+                '--ros-args',
+                '-p', f'use_sim_time:={str(use_sim).lower()}',
+                '-p', 'enabled:=false'
+            ]
+            self._explorer_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+            )
+            self.feedback_received.emit("[Explorer] Auto-spawning reactive explorer...")
+            return True
+        except Exception as e:
+            self.feedback_received.emit(f"[Error] Failed to auto-spawn explorer: {e}")
+            return False
+
     def set_auto_explore(self, enable: bool):
         """Call /set_explorer service and publish to /explorer/enable."""
         if self.node and self.explorer_enable_pub and self.node.context.ok():
@@ -506,13 +585,22 @@ class MappingRosWorker(QObject):
         def _call():
             if not self.set_exp_cli or not self.node or not self.node.context.ok():
                 return
-            if not self.set_exp_cli.wait_for_service(timeout_sec=1.2):
-                if self.toggle_exp_cli and self.toggle_exp_cli.wait_for_service(timeout_sec=0.5):
-                    self.trigger_service(self.toggle_exp_cli, "Toggle Explorer")
+            if not self.set_exp_cli.wait_for_service(timeout_sec=0.4):
+                if enable and self._ensure_explorer_running():
+                    if not self.set_exp_cli.wait_for_service(timeout_sec=2.5):
+                        if self.toggle_exp_cli and self.toggle_exp_cli.wait_for_service(timeout_sec=0.5):
+                            self.trigger_service(self.toggle_exp_cli, "Toggle Explorer")
+                        else:
+                            self.feedback_received.emit("[Warning] Explorer Service Offline")
+                            self.explorer_state_received.emit(False)
+                        return
                 else:
-                    self.feedback_received.emit("[Warning] Explorer Service Offline")
-                    self.explorer_state_received.emit(False)
-                return
+                    if self.toggle_exp_cli and self.toggle_exp_cli.wait_for_service(timeout_sec=0.5):
+                        self.trigger_service(self.toggle_exp_cli, "Toggle Explorer")
+                    else:
+                        self.feedback_received.emit("[Warning] Explorer Service Offline")
+                        self.explorer_state_received.emit(False)
+                    return
             req = SetBool.Request()
             req.data = bool(enable)
             future = self.set_exp_cli.call_async(req)
@@ -560,6 +648,89 @@ class MappingRosWorker(QObject):
         """Trigger /recenter_robot service to respawn Khepera IV at origin rightside up."""
         self.trigger_service(self.recenter_cli, "Recenter Robot")
 
+    def _active_goal_cb(self, msg: PointStamped):
+        """Forward active target to dashboard GUI."""
+        self.active_goal_received.emit(msg.point.x, msg.point.y)
+
+    def send_user_goal(self, x: float, y: float):
+        """Dispatch a single user-clicked target to /explorer/user_goal."""
+        if self.node and self.user_goal_pub and self.node.context.ok():
+            msg = PoseStamped()
+            msg.header.stamp = self.node.get_clock().now().to_msg()
+            msg.header.frame_id = 'map'
+            msg.pose.position.x = float(x)
+            msg.pose.position.y = float(y)
+            msg.pose.orientation.w = 1.0
+            self.user_goal_pub.publish(msg)
+
+        if self.auto_spawn_explorer and self.is_running and self.set_exp_cli and not self.set_exp_cli.service_is_ready():
+            def _ensure_goal():
+                try:
+                    if not self.is_running or not self.node or not self.node.context.ok():
+                        return
+                    if self._ensure_explorer_running():
+                        if not self.is_running or not self.node or not self.node.context.ok():
+                            return
+                        if self.set_exp_cli and self.set_exp_cli.wait_for_service(timeout_sec=2.5):
+                            if self.is_running and self.node and self.node.context.ok() and self.user_goal_pub:
+                                msg = PoseStamped()
+                                msg.header.stamp = self.node.get_clock().now().to_msg()
+                                msg.header.frame_id = 'map'
+                                msg.pose.position.x = float(x)
+                                msg.pose.position.y = float(y)
+                                msg.pose.orientation.w = 1.0
+                                self.user_goal_pub.publish(msg)
+                except Exception:
+                    pass
+            threading.Thread(target=_ensure_goal, daemon=True).start()
+
+    def send_user_path(self, points: List[Tuple[float, float]]):
+        """Dispatch user-drawn exploration path to /explorer/user_path."""
+        if self.node and self.user_path_pub and self.node.context.ok():
+            msg = Path()
+            msg.header.stamp = self.node.get_clock().now().to_msg()
+            msg.header.frame_id = 'map'
+            for pt in points:
+                ps = PoseStamped()
+                ps.header = msg.header
+                ps.pose.position.x = float(pt[0])
+                ps.pose.position.y = float(pt[1])
+                ps.pose.orientation.w = 1.0
+                msg.poses.append(ps)
+            self.user_path_pub.publish(msg)
+
+        if self.auto_spawn_explorer and self.is_running and self.set_exp_cli and not self.set_exp_cli.service_is_ready():
+            def _ensure_path():
+                try:
+                    if not self.is_running or not self.node or not self.node.context.ok():
+                        return
+                    if self._ensure_explorer_running():
+                        if not self.is_running or not self.node or not self.node.context.ok():
+                            return
+                        if self.set_exp_cli and self.set_exp_cli.wait_for_service(timeout_sec=2.5):
+                            if self.is_running and self.node and self.node.context.ok() and self.user_path_pub:
+                                msg = Path()
+                                msg.header.stamp = self.node.get_clock().now().to_msg()
+                                msg.header.frame_id = 'map'
+                                for pt in points:
+                                    ps = PoseStamped()
+                                    ps.header = msg.header
+                                    ps.pose.position.x = float(pt[0])
+                                    ps.pose.position.y = float(pt[1])
+                                    ps.pose.orientation.w = 1.0
+                                    msg.poses.append(ps)
+                                self.user_path_pub.publish(msg)
+                except Exception:
+                    pass
+            threading.Thread(target=_ensure_path, daemon=True).start()
+
+    def send_clear_path(self):
+        """Dispatch clear command to /explorer/clear_path."""
+        if self.node and self.clear_path_pub and self.node.context.ok():
+            msg = Bool()
+            msg.data = True
+            self.clear_path_pub.publish(msg)
+
     def spin(self):
         while self.is_running and rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.02)
@@ -567,6 +738,20 @@ class MappingRosWorker(QObject):
     def stop(self):
         self.is_running = False
         if self.node:
+            self.publish_cmd(0.0, 0.0)
+        if self._explorer_proc is not None:
+            try:
+                import signal
+                if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
+                    os.killpg(os.getpgid(self._explorer_proc.pid), signal.SIGTERM)
+                else:
+                    self._explorer_proc.terminate()
+            except Exception:
+                try:
+                    self._explorer_proc.kill()
+                except Exception:
+                    pass
+            self._explorer_proc = None
             self.publish_cmd(0.0, 0.0)
 
 
@@ -581,6 +766,8 @@ class MappingDashboardWindow(QMainWindow):
     def __init__(self, ros_worker: Optional[MappingRosWorker] = None):
         super().__init__()
         self.ros = ros_worker
+        if self.ros:
+            self.ros.auto_spawn_explorer = True
 
         # Robot State & Telemetry
         self.robot_x = 0.0
@@ -600,6 +787,12 @@ class MappingDashboardWindow(QMainWindow):
 
         # Autonomy State
         self.is_auto_exploring = False
+
+        # Interactive Map Drawing & User-Target State
+        self.active_goal: Optional[Tuple[float, float]] = None
+        self.drawn_path: List[Tuple[float, float]] = []
+        self.is_drawing_path: bool = False
+        self.map_interaction_mode: str = 'none'  # 'none', 'click_goal', 'draw_path'
 
         # Teleoperation Limits & Keyboard State
         self.max_linear_speed = 0.15   # m/s
@@ -639,6 +832,13 @@ class MappingDashboardWindow(QMainWindow):
             self.ros.turned_over_received.connect(self.on_turned_over_received)
             self.ros.feedback_received.connect(self.on_feedback_received)
             self.ros.explorer_state_received.connect(self.on_explorer_state_received)
+            self.ros.active_goal_received.connect(self.on_active_goal_received)
+            self.ros.screenshot_requested.connect(self._on_save_screenshot)
+
+        # Install application event filter for uninterrupted WASD keyboard teleop
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
 
         # Teleop control timer (20 Hz loop for smooth keyboard/D-Pad response)
         self.teleop_timer = QTimer(self)
@@ -653,11 +853,25 @@ class MappingDashboardWindow(QMainWindow):
         # Initial plot draw
         self.update_map_plot()
 
+    def _on_save_screenshot(self, filepath: str):
+        """Save a crisp full screenshot of the dashboard window and the map canvas."""
+        try:
+            target_path = os.path.abspath(filepath)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            self.grab().save(target_path)
+            canvas_path = os.path.splitext(target_path)[0] + "_map.png"
+            self.canvas.figure.savefig(canvas_path, dpi=120, bbox_inches='tight')
+            if hasattr(self, 'lbl_draw_info') and self.lbl_draw_info:
+                self.lbl_draw_info.setText(f"Screenshot saved: {os.path.basename(target_path)}")
+        except Exception as e:
+            print(f"[Dashboard] Error saving screenshot: {e}")
+
     def init_ui(self):
         self.setWindowTitle("Khepera IV Mapping & Spatial Exploration Station")
         self.resize(1280, 800)
         self.setMinimumSize(1024, 660)
         self.setStyleSheet(MODERN_STYLE)
+        self.setFocusPolicy(Qt.StrongFocus)
 
         # Central Splitter Layout
         central_widget = QWidget(self)
@@ -785,8 +999,8 @@ class MappingDashboardWindow(QMainWindow):
 
         left_layout.addWidget(teleop_group)
 
-        # 3. Autonomous Exploration GroupBox
-        explore_group = QGroupBox("Exploration Autonomy")
+        # 3. Autonomous & User-Guided Exploration GroupBox
+        explore_group = QGroupBox("Autonomous & User-Guided Exploration")
         exp_layout = QVBoxLayout(explore_group)
         exp_layout.setSpacing(5)
 
@@ -801,6 +1015,40 @@ class MappingDashboardWindow(QMainWindow):
 
         exp_layout.addWidget(self.btn_auto_explore)
         exp_layout.addWidget(self.lbl_explore_status)
+
+        # User-guided path and target buttons
+        user_draw_row = QWidget()
+        udr_layout = QHBoxLayout(user_draw_row)
+        udr_layout.setContentsMargins(0, 0, 0, 0)
+        udr_layout.setSpacing(4)
+
+        self.btn_click_goal = QPushButton("📍 Set Target")
+        self.btn_click_goal.setObjectName("user_draw_btn")
+        self.btn_click_goal.setCheckable(True)
+        self.btn_click_goal.setCursor(Qt.PointingHandCursor)
+        self.btn_click_goal.clicked.connect(self.on_toggle_click_goal_mode)
+
+        self.btn_draw_path = QPushButton("✏️ Draw Path")
+        self.btn_draw_path.setObjectName("user_draw_btn")
+        self.btn_draw_path.setCheckable(True)
+        self.btn_draw_path.setCursor(Qt.PointingHandCursor)
+        self.btn_draw_path.clicked.connect(self.on_toggle_draw_path_mode)
+
+        self.btn_clear_user_path = QPushButton("🧹 Clear")
+        self.btn_clear_user_path.setObjectName("user_clear_btn")
+        self.btn_clear_user_path.setCursor(Qt.PointingHandCursor)
+        self.btn_clear_user_path.clicked.connect(self.on_clear_user_path_clicked)
+
+        udr_layout.addWidget(self.btn_click_goal)
+        udr_layout.addWidget(self.btn_draw_path)
+        udr_layout.addWidget(self.btn_clear_user_path)
+
+        self.lbl_draw_info = QLabel("Map Draw: Click 'Set Target' or 'Draw Path' to guide robot.")
+        self.lbl_draw_info.setStyleSheet("color: #fbbf24; font-size: 9.5px;")
+        self.lbl_draw_info.setWordWrap(True)
+
+        exp_layout.addWidget(user_draw_row)
+        exp_layout.addWidget(self.lbl_draw_info)
         left_layout.addWidget(explore_group)
 
         # 4. Attitude & Terrain HUD GroupBox
@@ -981,9 +1229,15 @@ class MappingDashboardWindow(QMainWindow):
         # Matplotlib Canvas for High-Performance Spatial Map Rendering
         self.figure = Figure(figsize=(8, 7), facecolor='#0b0f19')
         self.canvas = FigureCanvas(self.figure)
-        self.ax_map = self.figure.add_subplot(111)
+        self.canvas.setStyleSheet("background-color: #0b0f19;")
+        self.ax_map = self.figure.add_subplot(111, facecolor='#0f172a')
         self.figure.subplots_adjust(left=0.07, right=0.96, top=0.94, bottom=0.07)
         right_layout.addWidget(self.canvas)
+
+        # Connect Matplotlib Canvas mouse events for user targeting and path drawing
+        self.canvas.mpl_connect('button_press_event', self.on_canvas_press)
+        self.canvas.mpl_connect('motion_notify_event', self.on_canvas_motion)
+        self.canvas.mpl_connect('button_release_event', self.on_canvas_release)
 
         main_layout.addWidget(right_panel, stretch=1)
 
@@ -1019,6 +1273,28 @@ class MappingDashboardWindow(QMainWindow):
         if self.ros:
             self.ros.publish_cmd(0.0, 0.0)
         self.lbl_teleop_cmd.setText("Cmd: v = +0.00 m/s | ω = +0.00 rad/s [STOPPED]")
+
+    def eventFilter(self, obj, event):
+        """Application-wide event filter to guarantee WASD teleop works regardless of focused widget."""
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D,
+                       Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
+                       Qt.Key_Space):
+                if not event.isAutoRepeat():
+                    self.keys_pressed.add(key)
+                    if self.is_auto_exploring:
+                        self.on_toggle_auto_explore()
+                return True
+        elif event.type() == QEvent.KeyRelease:
+            key = event.key()
+            if key in (Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D,
+                       Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
+                       Qt.Key_Space):
+                if not event.isAutoRepeat() and key in self.keys_pressed:
+                    self.keys_pressed.remove(key)
+                return True
+        return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event: QKeyEvent):
         if not event.isAutoRepeat():
@@ -1133,6 +1409,105 @@ class MappingDashboardWindow(QMainWindow):
             self.btn_auto_explore.style().unpolish(self.btn_auto_explore)
             self.btn_auto_explore.style().polish(self.btn_auto_explore)
 
+    def on_active_goal_received(self, gx: float, gy: float):
+        """Update active exploration target received from /explorer/active_goal."""
+        self.active_goal = (gx, gy)
+
+    def on_toggle_click_goal_mode(self):
+        """Toggle mode to click anywhere on map to set exploration target."""
+        if self.btn_click_goal.isChecked():
+            self.map_interaction_mode = 'click_goal'
+            self.btn_draw_path.setChecked(False)
+            self.lbl_draw_info.setText("📍 Click anywhere on the map to set a courageous target.")
+            self.lbl_draw_info.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 9.5px;")
+        else:
+            self.map_interaction_mode = 'none'
+            self.lbl_draw_info.setText("Interactive: Select tool above to guide robot.")
+            self.lbl_draw_info.setStyleSheet("color: #94a3b8; font-size: 9.5px;")
+
+    def on_toggle_draw_path_mode(self):
+        """Toggle mode to draw an exploration path on map with mouse drag."""
+        if self.btn_draw_path.isChecked():
+            self.map_interaction_mode = 'draw_path'
+            self.btn_click_goal.setChecked(False)
+            self.lbl_draw_info.setText("✏️ Drag mouse across map to draw exploration path.")
+            self.lbl_draw_info.setStyleSheet("color: #fbbf24; font-weight: bold; font-size: 9.5px;")
+        else:
+            self.map_interaction_mode = 'none'
+            self.lbl_draw_info.setText("Interactive: Select tool above to guide robot.")
+            self.lbl_draw_info.setStyleSheet("color: #94a3b8; font-size: 9.5px;")
+
+    def on_clear_user_path_clicked(self):
+        """Clear user path and waypoints and revert to autonomous exploration."""
+        self.drawn_path.clear()
+        self.active_goal = None
+        self.btn_click_goal.setChecked(False)
+        self.btn_draw_path.setChecked(False)
+        self.map_interaction_mode = 'none'
+        if self.ros:
+            self.ros.send_clear_path()
+        self.lbl_draw_info.setText("User path and targets cleared. Resumed autonomous mode.")
+        self.lbl_draw_info.setStyleSheet("color: #94a3b8; font-size: 9.5px;")
+        self.update_map_plot()
+
+    def on_canvas_press(self, event):
+        """Handle canvas mouse press for goal clicking or path drawing."""
+        if event.inaxes != self.ax_map or event.xdata is None or event.ydata is None:
+            return
+        x = float(np.clip(event.xdata, -2.40, 2.40))
+        y = float(np.clip(event.ydata, -2.40, 2.40))
+
+        if self.map_interaction_mode == 'click_goal':
+            self.active_goal = (x, y)
+            if self.ros:
+                self.ros.send_user_goal(x, y)
+            self.lbl_draw_info.setText(f"Target set at ({x:.2f}, {y:.2f}). Starting autonomous pursuit.")
+            self.btn_click_goal.setChecked(False)
+            self.map_interaction_mode = 'none'
+            if not self.is_auto_exploring:
+                self.on_toggle_auto_explore()
+            self.update_map_plot()
+
+        elif self.map_interaction_mode == 'draw_path':
+            self.is_drawing_path = True
+            self.drawn_path = [(x, y)]
+            self.lbl_draw_info.setText("Drawing path... (1 point)")
+            self.update_map_plot()
+
+    def on_canvas_motion(self, event):
+        """Handle canvas mouse drag for continuous path drawing."""
+        if not self.is_drawing_path or self.map_interaction_mode != 'draw_path':
+            return
+        if event.inaxes != self.ax_map or event.xdata is None or event.ydata is None:
+            return
+        x = float(np.clip(event.xdata, -2.40, 2.40))
+        y = float(np.clip(event.ydata, -2.40, 2.40))
+
+        if not self.drawn_path:
+            self.drawn_path.append((x, y))
+            return
+
+        lx, ly = self.drawn_path[-1]
+        if math.hypot(x - lx, y - ly) >= 0.08:  # 8cm spacing
+            self.drawn_path.append((x, y))
+            self.lbl_draw_info.setText(f"Drawing path: {len(self.drawn_path)} waypoints...")
+            self.update_map_plot()
+
+    def on_canvas_release(self, event):
+        """Handle canvas mouse release to finalize and dispatch drawn path."""
+        if self.is_drawing_path:
+            self.is_drawing_path = False
+            if len(self.drawn_path) >= 2:
+                if self.ros:
+                    self.ros.send_user_path(self.drawn_path)
+                self.lbl_draw_info.setText(f"Path dispatched ({len(self.drawn_path)} waypoints). Starting exploration!")
+                self.lbl_draw_info.setStyleSheet("color: #10b981; font-weight: bold; font-size: 9.5px;")
+                if not self.is_auto_exploring:
+                    self.on_toggle_auto_explore()
+            self.btn_draw_path.setChecked(False)
+            self.map_interaction_mode = 'none'
+            self.update_map_plot()
+
     # --------------------------------------------------------------------------
     # Persistence Slots
     # --------------------------------------------------------------------------
@@ -1181,7 +1556,8 @@ class MappingDashboardWindow(QMainWindow):
         self.lbl_roll_val.setText(f"{roll:+.1f}°")
 
         slope = math.hypot(pitch, roll)
-        if (az < 1.0) or (slope > 70.0):
+        is_flipped = (az < -1.0) or (az < 1.0 and slope > 45.0) or (slope > 70.0)
+        if is_flipped:
             if not self.is_turned_over:
                 self.on_turned_over_received(True)
         elif self.is_turned_over and (az >= 2.0) and (slope <= 50.0):
@@ -1241,6 +1617,8 @@ class MappingDashboardWindow(QMainWindow):
                 "background-color: #064e3b; border: 1px solid #10b981; border-radius: 5px; "
                 "color: #6ee7b7; font-size: 10px; font-weight: bold; padding: 4px;"
             )
+            if "LOCKED" in self.lbl_teleop_cmd.text():
+                self.lbl_teleop_cmd.setText("Cmd: v = +0.00 m/s | ω = +0.00 rad/s")
 
     def on_cliff_alert_received(self, alert: bool):
         self.is_cliff_alert = alert
@@ -1422,6 +1800,25 @@ class MappingDashboardWindow(QMainWindow):
         if self.show_trajectory and len(self.robot_path) > 1:
             px, py = zip(*self.robot_path)
             self.ax_map.plot(px, py, color='#38bdf8', linewidth=1.6, alpha=0.75, linestyle='-', zorder=3)
+
+        # 4b. Draw User-Drawn Exploration Path
+        if len(self.drawn_path) > 1:
+            ux, uy = zip(*self.drawn_path)
+            self.ax_map.plot(ux, uy, color='#fbbf24', linewidth=2.0, linestyle='--', alpha=0.90, zorder=4)
+            self.ax_map.plot(ux, uy, 'o', color='#f59e0b', markersize=4.0, alpha=0.90, zorder=4)
+
+        # 4c. Draw Active Exploration Target (Bullseye)
+        if self.active_goal is not None:
+            gx, gy = self.active_goal
+            self.ax_map.plot(gx, gy, 'o', color='#f43f5e', markersize=11, fillstyle='none', markeredgewidth=2.2, zorder=7)
+            self.ax_map.plot(gx, gy, '+', color='#f43f5e', markersize=14, markeredgewidth=1.8, zorder=7)
+            self.ax_map.plot(gx, gy, '.', color='#ffffff', markersize=3.5, zorder=7)
+            self.ax_map.text(
+                gx + 0.08, gy + 0.08, f"Target ({gx:.2f}, {gy:.2f})",
+                color='#fecdd3', fontsize=8, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.2", facecolor='#4c0519', edgecolor='#f43f5e', alpha=0.85),
+                zorder=8
+            )
 
         # 5. Draw Multi-Sensor Scan Rays (IR close-range in orange, US medium-range in cyan)
         rx, ry, ryaw = self.robot_x, self.robot_y, self.robot_yaw

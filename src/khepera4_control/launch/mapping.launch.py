@@ -69,7 +69,7 @@ def generate_launch_description():
 
     auto_explore_arg = DeclareLaunchArgument(
         'auto_explore',
-        default_value='false',
+        default_value='true',
         description='Launch autonomous reactive explorer (true/false)'
     )
 
@@ -189,7 +189,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': effective_use_sim_time,
-            'enabled': True,
+            'enabled': False,
             'linear_speed': 0.12,
             'reverse_speed': 0.05,
             'turn_speed': 0.90,

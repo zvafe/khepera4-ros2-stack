@@ -78,8 +78,8 @@ def generate_launch_description():
 
     auto_explore_arg = DeclareLaunchArgument(
         'auto_explore',
-        default_value='false',
-        description='Launch autonomous reactive explorer (default: false)'
+        default_value='true',
+        description='Launch autonomous reactive explorer (default: true)'
     )
 
     # 1. Hardware Bridge Node
@@ -172,7 +172,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': False,
-            'enabled': True,
+            'enabled': False,
             'linear_speed': 0.12,
             'reverse_speed': 0.05,
             'turn_speed': 0.90,
