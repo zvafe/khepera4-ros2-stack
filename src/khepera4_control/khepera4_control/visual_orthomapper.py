@@ -52,9 +52,19 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from sensor_msgs.msg import CameraInfo, Image as RosImage
+from sensor_msgs.msg import (
+    CameraInfo,
+    Image as RosImage,
+    LaserScan,
+    PointCloud2,
+)
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
+
+try:
+    from khepera4_control.pointcloud_builder import PointCloud3DBuilder
+except ImportError:
+    PointCloud3DBuilder = None
 
 
 class KeyframeManager:
@@ -467,6 +477,22 @@ class VisualOrthomapper(Node):
         self.declare_parameter('kf_cliff_cooldown', 1.0)           # 1.0s deb
         self.declare_parameter('kf_cliff_dist_thresh', 0.05)       # 0.05m deb
 
+        # ----------------------------------------------------------------------
+        # Parameters: Occlusion Culling & 3D PointCloud
+        # ----------------------------------------------------------------------
+        self.declare_parameter('scan_topic', '/khepera4/scan')
+        self.declare_parameter('map_topic', '/map')
+        self.declare_parameter('elevation_map_topic', '/elevation_map')
+        self.declare_parameter('enable_occlusion_culling', True)
+        self.declare_parameter('shadow_culling_margin', 0.02)      # meters
+        self.declare_parameter('enable_distance_attenuation', False)
+        self.declare_parameter('occ_threshold', 50)
+        self.declare_parameter('publish_pointcloud_3d', True)
+        self.declare_parameter(
+            'pointcloud_topic', '/khepera4/pointcloud3d'
+        )
+        self.declare_parameter('pointcloud_publish_rate', 2.0)     # Hz
+
         # Extract parameters into local variables
         self.res = float(self.get_parameter('map_resolution').value)
         self.width = int(self.get_parameter('map_width').value)
@@ -527,6 +553,31 @@ class VisualOrthomapper(Node):
             self.get_parameter('kf_cliff_dist_thresh').value
         )
 
+        self.scan_topic = str(self.get_parameter('scan_topic').value)
+        self.map_topic = str(self.get_parameter('map_topic').value)
+        self.elevation_map_topic = str(
+            self.get_parameter('elevation_map_topic').value
+        )
+        self.enable_occlusion_culling = bool(
+            self.get_parameter('enable_occlusion_culling').value
+        )
+        self.shadow_culling_margin = float(
+            self.get_parameter('shadow_culling_margin').value
+        )
+        self.enable_distance_attenuation = bool(
+            self.get_parameter('enable_distance_attenuation').value
+        )
+        self.occ_threshold = int(self.get_parameter('occ_threshold').value)
+        self.publish_pointcloud_3d = bool(
+            self.get_parameter('publish_pointcloud_3d').value
+        )
+        self.pointcloud_topic = str(
+            self.get_parameter('pointcloud_topic').value
+        )
+        self.pointcloud_publish_rate = float(
+            self.get_parameter('pointcloud_publish_rate').value
+        )
+
         # ----------------------------------------------------------------------
         # State Variables: Odometry, IMU & Telemetry
         # ----------------------------------------------------------------------
@@ -565,6 +616,47 @@ class VisualOrthomapper(Node):
         self.latest_camera_frame: Optional[np.ndarray] = None
         self.latest_camera_stamp = None
 
+        # Scan and Occlusion Culling state
+        self.latest_scan_ranges: Optional[np.ndarray] = None
+        self.scan_angle_min: float = -math.pi
+        self.scan_angle_max: float = math.pi - (2.0 * math.pi / 360.0)
+        self.scan_angle_inc: float = 2.0 * math.pi / 360.0
+        self.scan_range_min: float = 0.002
+        self.scan_range_max: float = 2.0
+
+        # SLAM obstacle footprint mask and elevation grid
+        self.latest_obstacle_mask = np.zeros(
+            (self.height, self.width), dtype=bool
+        )
+        self.latest_elevation_grid: Optional[np.ndarray] = None
+
+        # PointCloud3DBuilder instance
+        self.pointcloud_builder = None
+        if PointCloud3DBuilder is not None:
+            try:
+                self.pointcloud_builder = PointCloud3DBuilder(
+                    map_res=self.res,
+                    map_width=self.width,
+                    map_height=self.height,
+                    origin_x=self.origin_x,
+                    origin_y=self.origin_y,
+                    camera_xc=self.camera_xc,
+                    camera_h=self.camera_h,
+                    fx=self.fx,
+                    fy=self.fy,
+                    cx=self.cx,
+                    cy=self.cy,
+                    img_width=self.image_width,
+                    img_height=self.image_height,
+                    wall_height_max=0.35,
+                    wall_delta_z=0.03
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'Could not initialize PointCloud3DBuilder: {exc}'
+                )
+                self.pointcloud_builder = None
+
         # ----------------------------------------------------------------------
         # Visual Map Memory
         # ----------------------------------------------------------------------
@@ -600,6 +692,11 @@ class VisualOrthomapper(Node):
         self.visual_map_image_pub = self.create_publisher(
             RosImage,
             str(self.get_parameter('visual_map_image_topic').value),
+            qos_latched
+        )
+        self.pointcloud_pub = self.create_publisher(
+            PointCloud2,
+            self.pointcloud_topic,
             qos_latched
         )
 
@@ -640,6 +737,27 @@ class VisualOrthomapper(Node):
             self.cliff_callback,
             10
         )
+        # 5. Proximity scan for occlusion culling
+        self.scan_sub = self.create_subscription(
+            LaserScan,
+            self.scan_topic,
+            self.scan_callback,
+            10
+        )
+        # 6. SLAM OccupancyGrid for obstacle cache purging
+        self.map_sub = self.create_subscription(
+            OccupancyGrid,
+            self.map_topic,
+            self.map_callback,
+            qos_latched
+        )
+        # 7. Elevation map for terrain height synthesis
+        self.elevation_map_sub = self.create_subscription(
+            OccupancyGrid,
+            self.elevation_map_topic,
+            self.elevation_map_callback,
+            qos_latched
+        )
 
         # ----------------------------------------------------------------------
         # Services & Timers
@@ -676,6 +794,15 @@ class VisualOrthomapper(Node):
         self.publish_timer = self.create_timer(
             publish_period, self.publish_visual_maps
         )
+
+        # Periodic 3D point cloud publisher timer
+        if self.pointcloud_publish_rate > 0.0:
+            self.pointcloud_timer = self.create_timer(
+                1.0 / self.pointcloud_publish_rate,
+                self.publish_pointcloud
+            )
+        else:
+            self.pointcloud_timer = None
 
         self.get_logger().info(
             f'VisualOrthomapper initialized: Grid {self.width}x{self.height} '
@@ -871,6 +998,135 @@ class VisualOrthomapper(Node):
         """Track downward cliff / drop-off alerts."""
         self.cliff_alert = bool(msg.data)
 
+    def scan_callback(self, msg: LaserScan):
+        """
+        Handle /khepera4/scan updates.
+
+        Stores the 360-ray obstacle depth horizon d(theta) for occlusion culling.
+        """
+        self.latest_scan_ranges = np.array(msg.ranges, dtype=np.float32)
+        self.scan_angle_min = float(msg.angle_min)
+        self.scan_angle_max = float(msg.angle_max)
+        self.scan_angle_inc = float(msg.angle_increment)
+        self.scan_range_min = float(msg.range_min)
+        self.scan_range_max = float(msg.range_max)
+
+    def map_callback(self, msg: OccupancyGrid):
+        """
+        Handle SLAM OccupancyGrid updates.
+
+        Purges observed_mask, color_map, and weight_map for occupied cells
+        (data >= occ_threshold) and caches latest_obstacle_mask.
+        """
+        h, w = msg.info.height, msg.info.width
+        data_arr = np.array(msg.data, dtype=np.int8)
+        if len(data_arr) != h * w:
+            return
+
+        grid_2d = data_arr.reshape((h, w))
+        occ_mask = grid_2d >= self.occ_threshold
+
+        if (
+            h == self.height and
+            w == self.width and
+            abs(msg.info.origin.position.x - self.origin_x) < 1e-3 and
+            abs(msg.info.origin.position.y - self.origin_y) < 1e-3 and
+            abs(msg.info.resolution - self.res) < 1e-4
+        ):
+            self.latest_obstacle_mask = occ_mask.copy()
+        else:
+            self.latest_obstacle_mask.fill(False)
+            occ_indices = np.where(occ_mask)
+            if len(occ_indices[0]) > 0:
+                ro_arr, co_arr = occ_indices
+                xw = (
+                    msg.info.origin.position.x +
+                    (co_arr.astype(np.float64) + 0.5) * msg.info.resolution
+                )
+                yw = (
+                    msg.info.origin.position.y +
+                    (ro_arr.astype(np.float64) + 0.5) * msg.info.resolution
+                )
+                col_self = np.floor(
+                    (xw - self.origin_x) / self.res
+                ).astype(np.int32)
+                row_self = np.floor(
+                    (yw - self.origin_y) / self.res
+                ).astype(np.int32)
+                valid = (
+                    (col_self >= 0) & (col_self < self.width) &
+                    (row_self >= 0) & (row_self < self.height)
+                )
+                self.latest_obstacle_mask[
+                    row_self[valid], col_self[valid]
+                ] = True
+
+        purge_mask = self.latest_obstacle_mask
+        self.observed_mask[purge_mask] = False
+        self.color_map[purge_mask] = 0.0
+        self.weight_map[purge_mask] = 0.0
+
+    def elevation_map_callback(self, msg: OccupancyGrid):
+        """
+        Handle /elevation_map updates.
+
+        Stores the latest elevation grid for 3D point cloud synthesis.
+        """
+        h, w = msg.info.height, msg.info.width
+        data_arr = np.array(msg.data, dtype=np.int8)
+        if len(data_arr) == h * w:
+            self.latest_elevation_grid = data_arr.reshape((h, w))
+
+    def compute_azimuthal_horizon_v(self, d_obs: float) -> float:
+        """
+        Compute base row cutoff v_base in image for obstacle at depth d_obs.
+
+        If d_obs <= x_c, returns image_height + 10 (singularity guard).
+        Otherwise returns cy + (h * fy) / (d_obs - x_c).
+        """
+        if not math.isfinite(d_obs) or d_obs <= self.camera_xc:
+            return float(self.image_height + 10)
+        return float(
+            self.cy + (self.camera_h * self.fy) / (d_obs - self.camera_xc)
+        )
+
+    def compute_distance_attenuated_alpha(self, xb: float) -> float:
+        """
+        Compute distance-attenuated alpha blending factor.
+
+        alpha(X_b) = alpha_max * ((X_max - X_b) / (X_max - X_min))^1.5
+        """
+        denom = max(1e-4, self.max_ground_dist - self.min_ground_dist)
+        norm_dist = np.clip((self.max_ground_dist - xb) / denom, 0.0, 1.0)
+        return float(self.alpha * (norm_dist ** 1.5))
+
+    def is_in_shadow(self, d_cell: float, theta: float) -> bool:
+        """
+        Check if a candidate ground cell is in obstacle shadow.
+
+        Returns True if d_cell >= d_obs - shadow_culling_margin.
+        """
+        if self.latest_scan_ranges is None:
+            return False
+        num_rays = len(self.latest_scan_ranges)
+        if num_rays == 0:
+            return False
+        scan_inc = (
+            self.scan_angle_inc
+            if abs(self.scan_angle_inc) > 1e-6
+            else (2.0 * math.pi / max(1, num_rays))
+        )
+        ray_idx = int(
+            np.round((theta - self.scan_angle_min) / scan_inc)
+        ) % num_rays
+        d_obs = float(self.latest_scan_ranges[ray_idx])
+        if not (
+            math.isfinite(d_obs) and
+            self.scan_range_min <= d_obs <= self.scan_range_max
+        ):
+            return False
+        return d_cell >= (d_obs - self.shadow_culling_margin - 1e-4)
+
     # ==========================================================================
     # Core Image Processing & Inverse Perspective Mapping (IPM)
     # ==========================================================================
@@ -1037,6 +1293,17 @@ class VisualOrthomapper(Node):
         if len(c_flat) == 0:
             return 0
 
+        # Exclude candidate cells overlapping confirmed SLAM obstacles
+        if self.latest_obstacle_mask is not None:
+            in_free = ~self.latest_obstacle_mask[r_flat, c_flat]
+            c_flat = c_flat[in_free]
+            r_flat = r_flat[in_free]
+            xm_flat = xm_flat[in_free]
+            ym_flat = ym_flat[in_free]
+
+        if len(c_flat) == 0:
+            return 0
+
         # Transform candidate world points to robot base link frame
         dx = xm_flat - rx
         dy = ym_flat - ry
@@ -1052,8 +1319,36 @@ class VisualOrthomapper(Node):
             (np.abs(yb) <= dist_c * tan_half_hfov)
         )
 
+        # Vectorized shadow culling against scan horizon
+        if self.enable_occlusion_culling and self.latest_scan_ranges is not None:
+            d_cell = np.hypot(xb, yb)
+            theta = np.arctan2(yb, xb)
+            num_rays = len(self.latest_scan_ranges)
+            if num_rays > 0:
+                scan_inc = (
+                    self.scan_angle_inc
+                    if abs(self.scan_angle_inc) > 1e-6
+                    else (2.0 * math.pi / max(1, num_rays))
+                )
+                ray_idx = (
+                    np.round(
+                        (theta - self.scan_angle_min) / scan_inc
+                    ).astype(np.int32) % num_rays
+                )
+                d_obs = self.latest_scan_ranges[ray_idx]
+                obs_valid = (
+                    np.isfinite(d_obs) &
+                    (d_obs >= self.scan_range_min) &
+                    (d_obs <= self.scan_range_max)
+                )
+                is_shadowed = obs_valid & (
+                    d_cell >= (d_obs - self.shadow_culling_margin - 1e-4)
+                )
+                in_fov = in_fov & (~is_shadowed)
+
         c_sel = c_flat[in_fov]
         r_sel = r_flat[in_fov]
+        xb_sel = xb[in_fov]
         yb_sel = yb[in_fov]
         dist_c_sel = dist_c[in_fov]
 
@@ -1072,8 +1367,42 @@ class VisualOrthomapper(Node):
             (v >= float(self.min_row_v)) & (v <= max_v)
         )
 
+        # Azimuthal horizon clamping: clamp sampled rows to v >= v_base(theta)
+        if self.enable_occlusion_culling and self.latest_scan_ranges is not None:
+            theta_sel = np.arctan2(yb_sel, xb_sel)
+            num_rays = len(self.latest_scan_ranges)
+            if num_rays > 0:
+                scan_inc = (
+                    self.scan_angle_inc
+                    if abs(self.scan_angle_inc) > 1e-6
+                    else (2.0 * math.pi / max(1, num_rays))
+                )
+                ray_idx_sel = (
+                    np.round(
+                        (theta_sel - self.scan_angle_min) / scan_inc
+                    ).astype(np.int32) % num_rays
+                )
+                d_obs_sel = self.latest_scan_ranges[ray_idx_sel]
+                obs_valid_sel = (
+                    np.isfinite(d_obs_sel) &
+                    (d_obs_sel >= self.scan_range_min) &
+                    (d_obs_sel <= self.scan_range_max)
+                )
+                denom = d_obs_sel - self.camera_xc
+                v_base = np.where(
+                    obs_valid_sel,
+                    np.where(
+                        denom > 1e-4,
+                        self.cy + h_fy / np.maximum(denom, 1e-4),
+                        float(img_h + 10)
+                    ),
+                    float(self.min_row_v)
+                )
+                valid_px = valid_px & (v >= v_base)
+
         c_valid = c_sel[valid_px]
         r_valid = r_sel[valid_px]
+        xb_valid = xb_sel[valid_px]
         u_valid = u[valid_px]
         v_valid = v[valid_px]
 
@@ -1116,9 +1445,19 @@ class VisualOrthomapper(Node):
         if len(idx_update) > 0:
             ru = r_valid[idx_update]
             cu = c_valid[idx_update]
-            alpha = self.alpha
+            if self.enable_distance_attenuation:
+                xb_u = xb_valid[idx_update]
+                norm_dist = np.clip(
+                    (self.max_ground_dist - xb_u) /
+                    max(1e-4, (self.max_ground_dist - self.min_ground_dist)),
+                    0.0, 1.0
+                )
+                alpha_val = (self.alpha * (norm_dist ** 1.5))[:, np.newaxis]
+            else:
+                alpha_val = self.alpha
             self.color_map[ru, cu] = (
-                (1.0 - alpha) * self.color_map[ru, cu] + alpha * c_obs[idx_update]
+                (1.0 - alpha_val) * self.color_map[ru, cu] +
+                alpha_val * c_obs[idx_update]
             )
             self.weight_map[ru, cu] = np.minimum(
                 self.weight_map[ru, cu] + 1.0, 100.0
@@ -1171,6 +1510,59 @@ class VisualOrthomapper(Node):
 
         img_msg.data = rgba.tobytes()
         self.visual_map_image_pub.publish(img_msg)
+
+        # ----------------------------------------------------------------------
+        # 3. PointCloud3D (/khepera4/pointcloud3d) if not scheduled on timer
+        # ----------------------------------------------------------------------
+        if self.publish_pointcloud_3d and self.pointcloud_timer is None:
+            self.publish_pointcloud()
+
+    def publish_pointcloud(self):
+        """Publish 3D depth-textured point cloud on /khepera4/pointcloud3d."""
+        if not self.publish_pointcloud_3d:
+            return
+
+        if self.pointcloud_builder is None:
+            try:
+                from khepera4_control.pointcloud_builder import (
+                    PointCloud3DBuilder,
+                )
+                self.pointcloud_builder = PointCloud3DBuilder(
+                    map_res=self.res,
+                    map_width=self.width,
+                    map_height=self.height,
+                    origin_x=self.origin_x,
+                    origin_y=self.origin_y,
+                    camera_xc=self.camera_xc,
+                    camera_h=self.camera_h,
+                    fx=self.fx,
+                    fy=self.fy,
+                    cx=self.cx,
+                    cy=self.cy,
+                    img_width=self.image_width,
+                    img_height=self.image_height,
+                    wall_height_max=0.35,
+                    wall_delta_z=0.03
+                )
+            except Exception:
+                return
+
+        if self.pointcloud_builder is not None:
+            now = self.get_clock().now().to_msg()
+            try:
+                cloud_msg = self.pointcloud_builder.build_pointcloud(
+                    stamp=now,
+                    color_map=self.color_map,
+                    observed_mask=self.observed_mask,
+                    elevation_grid=self.latest_elevation_grid,
+                    scan_ranges=self.latest_scan_ranges,
+                    robot_pose=(self.robot_x, self.robot_y, self.robot_yaw),
+                    camera_image=self.latest_camera_frame
+                )
+                if cloud_msg is not None:
+                    self.pointcloud_pub.publish(cloud_msg)
+            except Exception as exc:
+                self.get_logger().error(f'Error generating pointcloud: {exc}')
 
     # ==========================================================================
     # Spatial Keyframe & Inspection Landmark System
@@ -1401,6 +1793,8 @@ class VisualOrthomapper(Node):
         self.color_map.fill(0.0)
         self.observed_mask.fill(False)
         self.weight_map.fill(0.0)
+        if self.latest_obstacle_mask is not None:
+            self.latest_obstacle_mask.fill(False)
         if purge_disk:
             self.clear_keyframes()
 
@@ -1409,6 +1803,8 @@ class VisualOrthomapper(Node):
         self.get_logger().info('Clearing visual map memory and keyframes...')
         self.clear(purge_disk=True)
         self.publish_visual_maps()
+        if self.publish_pointcloud_3d:
+            self.publish_pointcloud()
         response.success = True
         response.message = 'Visual map and keyframe catalog cleared.'
         return response
@@ -1418,7 +1814,13 @@ class VisualOrthomapper(Node):
     ) -> str:
         """Generate and save multi-layer composite visual map."""
         lo_grid = np.zeros((self.height, self.width), dtype=np.float32)
-        elev_grid = np.full((self.height, self.width), -1, dtype=np.int8)
+        if self.latest_obstacle_mask is not None:
+            lo_grid[self.latest_obstacle_mask] = 1.0
+        elev_grid = (
+            self.latest_elevation_grid.copy()
+            if self.latest_elevation_grid is not None
+            else np.full((self.height, self.width), -1, dtype=np.int8)
+        )
         surf_grid = np.full((self.height, self.width), -1, dtype=np.int8)
         robot_path = [(self.robot_x, self.robot_y)] if self.has_odom else []
         return generate_composite_map(
