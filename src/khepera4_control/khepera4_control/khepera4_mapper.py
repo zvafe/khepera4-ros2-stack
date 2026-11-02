@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 Mobile Robotics Laboratory.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Khepera IV Mapping Engine: Multi-Sensor Fusion, Spatial Mapping & Persistent Memory.
 
@@ -17,27 +31,38 @@ Implements:
    - 4 Downward-facing IR ground sensors for drop-off detection (> 0.025m).
    - High-rate vertical vibration variance estimation for terrain roughness.
 5. Persistent Map Memory & Services:
-   - /save_map: Standard ROS YAML + PGM + High-resolution color PNG.
+   - /save_map: Standard ROS YAML + PGM + High-resolution color PNG + Composite Map.
    - /load_map: Reloads previous map for spatial memory persistence.
-   - /clear_map: Resets maps and memory.
+   - /clear_map: Resets maps, keyframes, and memory.
 """
 
 import collections
+from datetime import datetime, timezone
+import json
 import math
 import os
 import subprocess
-import time
 from typing import List, Optional, Tuple
 
 from geometry_msgs.msg import TransformStamped, Twist
-from khepera4_control.common import euler_from_quaternion, normalize_angle, quaternion_from_euler
+from khepera4_control.common import (
+    euler_from_quaternion,
+    normalize_angle,
+    quaternion_from_euler,
+)
+from khepera4_control.visual_orthomapper import generate_composite_map
 from nav_msgs.msg import OccupancyGrid, Odometry
 import numpy as np
 from PIL import Image, ImageDraw
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu, LaserScan
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
+from sensor_msgs.msg import Image as RosImage, Imu, LaserScan
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
@@ -142,10 +167,10 @@ class Khepera4Mapper(Node):
         self.declare_parameter('ir_gradient_window_s', 0.10)          # 100 ms rolling window
         self.declare_parameter('ir_gradient_min_cmd_v', 0.04)         # cmd_linear_x > 0.04 m/s
         self.declare_parameter('ir_gradient_min_delta_s', 0.002)      # encoder advance > 0.002 m
-        self.declare_parameter('ir_gradient_max_closing_rate', 0.0005)  # distance delta approx 0
-        self.declare_parameter('ir_gradient_proximity_thresh', 0.08)  # obstacle proximity threshold (m)
-        self.declare_parameter('imu_accel_gate_threshold', 0.10)      # IMU dynamic accel gate (m/s^2)
-        self.declare_parameter('imu_accel_proximity_thresh', 0.08)    # proximity gate for accel (m)
+        self.declare_parameter('ir_gradient_max_closing_rate', 0.0005)  # delta approx 0
+        self.declare_parameter('ir_gradient_proximity_thresh', 0.08)  # obstacle prox thresh (m)
+        self.declare_parameter('imu_accel_gate_threshold', 0.10)      # IMU accel gate (m/s^2)
+        self.declare_parameter('imu_accel_proximity_thresh', 0.08)    # prox gate for accel (m)
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
 
         # Phase 2: 2D Correlative Scan Matching & Pose Correction Parameters
@@ -154,12 +179,12 @@ class Khepera4Mapper(Node):
         self.declare_parameter('csm_search_angle', 0.03)              # +/- ~1.7 deg yaw window
         self.declare_parameter('csm_trans_step', 0.01)                # 1cm resolution
         self.declare_parameter('csm_angle_step', 0.015)               # ~0.86 deg resolution
-        self.declare_parameter('csm_min_valid_hits', 4)               # minimum scan points required
-        self.declare_parameter('csm_score_threshold', 0.20)           # minimum improvement score
-        self.declare_parameter('csm_alpha_smooth', 0.30)              # EMA smoothing factor for anti-jitter
-        self.declare_parameter('csm_deadband', 0.005)                 # 5mm deadband for micro-jitter suppression
-        self.declare_parameter('hit_count_confirm_threshold', 10)     # hits required to solidify wall
-        self.declare_parameter('enable_footprint_carving', True)      # dynamically erase ghost walls on traversal
+        self.declare_parameter('csm_min_valid_hits', 4)               # min scan points required
+        self.declare_parameter('csm_score_threshold', 0.20)           # min improvement score
+        self.declare_parameter('csm_alpha_smooth', 0.30)              # EMA smoothing factor
+        self.declare_parameter('csm_deadband', 0.005)                 # 5mm deadband
+        self.declare_parameter('hit_count_confirm_threshold', 10)     # hits to solidify wall
+        self.declare_parameter('enable_footprint_carving', True)      # erase ghost walls
 
         self.res = float(self.get_parameter('map_resolution').value)
         self.width = int(self.get_parameter('map_width').value)
@@ -186,15 +211,23 @@ class Khepera4Mapper(Node):
         self.arena_min_y = float(self.get_parameter('arena_min_y').value)
         self.arena_max_y = float(self.get_parameter('arena_max_y').value)
 
-        self.enable_ir_gradient_slip_check = bool(self.get_parameter('enable_ir_gradient_slip_check').value)
+        self.enable_ir_gradient_slip_check = bool(
+            self.get_parameter('enable_ir_gradient_slip_check').value
+        )
         self.enable_imu_accel_gate = bool(self.get_parameter('enable_imu_accel_gate').value)
         self.ir_gradient_window_s = float(self.get_parameter('ir_gradient_window_s').value)
         self.ir_gradient_min_cmd_v = float(self.get_parameter('ir_gradient_min_cmd_v').value)
         self.ir_gradient_min_delta_s = float(self.get_parameter('ir_gradient_min_delta_s').value)
-        self.ir_gradient_max_closing_rate = float(self.get_parameter('ir_gradient_max_closing_rate').value)
-        self.ir_gradient_proximity_thresh = float(self.get_parameter('ir_gradient_proximity_thresh').value)
+        self.ir_gradient_max_closing_rate = float(
+            self.get_parameter('ir_gradient_max_closing_rate').value
+        )
+        self.ir_gradient_proximity_thresh = float(
+            self.get_parameter('ir_gradient_proximity_thresh').value
+        )
         self.imu_accel_gate_threshold = float(self.get_parameter('imu_accel_gate_threshold').value)
-        self.imu_accel_proximity_thresh = float(self.get_parameter('imu_accel_proximity_thresh').value)
+        self.imu_accel_proximity_thresh = float(
+            self.get_parameter('imu_accel_proximity_thresh').value
+        )
 
         self.enable_scan_matching = bool(self.get_parameter('enable_scan_matching').value)
         self.csm_search_dist = float(self.get_parameter('csm_search_dist').value)
@@ -205,7 +238,9 @@ class Khepera4Mapper(Node):
         self.csm_score_thresh = float(self.get_parameter('csm_score_threshold').value)
         self.csm_alpha_smooth = float(self.get_parameter('csm_alpha_smooth').value)
         self.csm_deadband = float(self.get_parameter('csm_deadband').value)
-        self.hit_count_confirm_threshold = int(self.get_parameter('hit_count_confirm_threshold').value)
+        self.hit_count_confirm_threshold = int(
+            self.get_parameter('hit_count_confirm_threshold').value
+        )
         self.enable_footprint_carving = bool(self.get_parameter('enable_footprint_carving').value)
 
         # ----------------------------------------------------------------------
@@ -369,12 +404,48 @@ class Khepera4Mapper(Node):
             self.ground_ir_subs.append(sub)
 
         # ----------------------------------------------------------------------
+        # Visual Orthomap Cache for Composite Export
+        # ----------------------------------------------------------------------
+        self.visual_grid = np.full((self.height, self.width, 3), 200, dtype=np.uint8)
+        self.has_visual_map = False
+
+        qos_latched = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.visual_image_sub = self.create_subscription(
+            RosImage,
+            '/visual_map/image',
+            self.visual_image_callback,
+            qos_latched
+        )
+        self.visual_grid_sub = self.create_subscription(
+            OccupancyGrid,
+            '/visual_map',
+            self.visual_grid_callback,
+            qos_latched
+        )
+        self.clear_visual_map_cli = self.create_client(
+            Trigger, '/clear_visual_map'
+        )
+
+        # ----------------------------------------------------------------------
         # Services (Map Persistence & Memory & Recovery)
         # ----------------------------------------------------------------------
-        self.save_map_srv = self.create_service(Trigger, '/save_map', self.save_map_callback)
-        self.load_map_srv = self.create_service(Trigger, '/load_map', self.load_map_callback)
-        self.clear_map_srv = self.create_service(Trigger, '/clear_map', self.clear_map_callback)
-        self.recenter_srv = self.create_service(Trigger, '/recenter_robot', self.recenter_robot_callback)
+        self.save_map_srv = self.create_service(
+            Trigger, '/save_map', self.save_map_callback
+        )
+        self.load_map_srv = self.create_service(
+            Trigger, '/load_map', self.load_map_callback
+        )
+        self.clear_map_srv = self.create_service(
+            Trigger, '/clear_map', self.clear_map_callback
+        )
+        self.recenter_srv = self.create_service(
+            Trigger, '/recenter_robot', self.recenter_robot_callback
+        )
 
         # ----------------------------------------------------------------------
         # Timers
@@ -516,10 +587,13 @@ class Khepera4Mapper(Node):
         self._broadcast_map_tf(stamp)
 
     def _broadcast_map_tf(self, stamp):
-        """Broadcast dynamic map -> odom transform: T(map -> odom) = T(map -> base) * T(odom -> base)^-1.
+        """
+        Broadcast dynamic map -> odom transform.
 
-        This keeps the visual model in RViz (fixed frame: map) strictly aligned with the filtered map pose,
-        completely preventing wall-collision visual penetration and sensor beam tearing.
+        T(map -> odom) = T(map -> base) * T(odom -> base)^-1.
+        This keeps the visual model in RViz (fixed frame: map) strictly aligned with
+        the filtered map pose, completely preventing wall-collision visual penetration
+        and sensor beam tearing.
         """
         if not self.publish_map_tf:
             return
@@ -617,7 +691,10 @@ class Khepera4Mapper(Node):
             if self.clamp_odometry_slip and abs(delta_s) > self.max_step_delta_s:
                 delta_s = math.copysign(min(abs(delta_s), 0.25 / 50.0 * 1.5), delta_s)
 
-            now_sec = self.get_clock().now().nanoseconds * 1e-9 if (msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0) else (msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+            if msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0:
+                now_sec = self.get_clock().now().nanoseconds * 1e-9
+            else:
+                now_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
             # Wheel acceleration estimation from discrete odometry
             dt_odom = (now_sec - self.last_odom_time) if self.last_odom_time is not None else 0.02
@@ -674,8 +751,15 @@ class Khepera4Mapper(Node):
 
             # 2. IMU Accelerometer Sanity Gate
             is_imu_accel_slip = False
-            if (self.enable_imu_accel_gate and self.has_imu and self.imu_valid and self.last_imu_time is not None and
-                    (min_ir_range <= self.imu_accel_proximity_thresh or min_front_range <= self.imu_accel_proximity_thresh)):
+            has_imu_ready = (
+                self.enable_imu_accel_gate and self.has_imu and
+                self.imu_valid and self.last_imu_time is not None
+            )
+            near_imu_obs = (
+                min_ir_range <= self.imu_accel_proximity_thresh or
+                min_front_range <= self.imu_accel_proximity_thresh
+            )
+            if has_imu_ready and near_imu_obs:
                 if delta_s > 0.001 and self.wheel_accel_x > 0.50:
                     if self.ax_dynamic_filtered < self.imu_accel_gate_threshold:
                         is_imu_accel_slip = True
@@ -695,7 +779,11 @@ class Khepera4Mapper(Node):
             )
 
             # Surface normal and tangential projection
-            if is_near_contact or is_recent_impact or is_stalled_proximity or self.is_wheel_slipping:
+            needs_projection = (
+                is_near_contact or is_recent_impact or
+                is_stalled_proximity or self.is_wheel_slipping
+            )
+            if needs_projection:
                 normal = self._compute_surface_normal()
 
                 if normal is not None:
@@ -715,7 +803,8 @@ class Khepera4Mapper(Node):
                         )
 
                         # Head-on stall: clamp advance to zero within <= 0.03m of contact
-                        # When pushing straight into a wall (tangent_ratio < 0.18, within ~10 deg of head-on)
+                        # When pushing straight into a wall (tangent_ratio < 0.18,
+                        # within ~10 deg of head-on)
                         if tangent_ratio < 0.18:
                             delta_px = 0.0
                             delta_py = 0.0
@@ -730,13 +819,16 @@ class Khepera4Mapper(Node):
                             delta_px = eff_tangent * tx
                             delta_py = eff_tangent * ty
                     else:
-                        # Moving away from or parallel to surface (e.g. reverse motion or tangential sliding)
+                        # Moving away from or parallel to surface (e.g. reverse motion
+                        # or tangential sliding)
                         delta_px = dx_raw
                         delta_py = dy_raw
                 else:
                     # Near contact, impact, or slip but no normal found:
                     # Never unconditionally zero displacement without confirmed surface contact!
-                    if (is_near_contact or is_recent_impact) and min_ir_range < self.contact_dist_thresh:
+                    if (is_near_contact or is_recent_impact) and (
+                        min_ir_range < self.contact_dist_thresh
+                    ):
                         if delta_s > 0.0:
                             delta_px = 0.0
                             delta_py = 0.0
@@ -839,21 +931,24 @@ class Khepera4Mapper(Node):
         self.current_slope_deg = min(100.0, math.degrees(total_slope_rad))
 
         # 2b. Rollover / Turned Over Detection via Accelerometer & Gravity Vector
-        # An upright robot on flat ground experiences proper acceleration az ~ +9.81 m/s^2 (upward).
+        # An upright robot on flat ground experiences proper acceleration az ~ 9.81 m/s^2.
         # When turned upside down or rolled onto its side (e.g. falling off a ramp), gravity
         # is not pulling in the correct direction (az <= -1.0 m/s^2 or severe tilt > 70 deg).
         norm_a = math.sqrt(ax * ax + ay * ay + az * az)
         if norm_a > 1.0:
             z_gravity_ratio = az / norm_a
-            is_flipped_accel = (az < -1.0) or (az < 1.0 and self.current_slope_deg > 45.0) or (z_gravity_ratio < 0.17 and self.current_slope_deg > 45.0)
+            is_flipped_accel = (
+                (az < -1.0) or
+                (az < 1.0 and self.current_slope_deg > 45.0) or
+                (z_gravity_ratio < 0.17 and self.current_slope_deg > 45.0)
+            )
         else:
             is_flipped_accel = False
         self.is_turned_over = bool(is_flipped_accel or (self.current_slope_deg > 70.0))
 
         # NOTE FOR FUTURE SWARM COORDINATION:
-        # From this rollover / turned-over state variable (self.is_turned_over), a distress signal
-        # (e.g., publishing an SOS alert on '/swarm/distress' or broadcasting an emergency beacon)
-        # can be created to notify neighboring robots in the swarm for search, rescue, or re-routing.
+        # From this rollover state variable, a distress signal can be created to
+        # notify neighboring robots in the swarm for search, rescue, or re-routing.
         # (Do not implement the distress signal transmission logic yet per project requirements).
         if hasattr(self, 'turned_over_pub'):
             self.turned_over_pub.publish(Bool(data=self.is_turned_over))
@@ -863,7 +958,7 @@ class Khepera4Mapper(Node):
             std_dev = float(np.std(self.accel_z_buffer))
             self.current_roughness = int(np.clip(std_dev * 100.0, 0, 85))
 
-        # 3. IMU linear acceleration & jerk impact detection (||j|| > 40 m/s^3 or ax_dynamic < -1.2 m/s^2)
+        # 3. IMU linear accel & jerk impact detection (||j|| > 40 m/s^3 or ax_dynamic < -1.2 m/s^2)
         if msg.header.stamp.sec > 0 or msg.header.stamp.nanosec > 0:
             now_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         else:
@@ -1011,7 +1106,7 @@ class Khepera4Mapper(Node):
 
                 idx = int(round((angle - angle_min) / angle_inc)) % num_samples
 
-                # Reject ultrasonic hits that penetrate through obstacles detected at close range by IR
+                # Reject ultrasonic hits penetrating obstacles detected at close range by IR
                 if min_ir_dist < 0.15 and dist > (min_ir_dist + 0.15):
                     continue
 
@@ -1019,8 +1114,15 @@ class Khepera4Mapper(Node):
                 if self.has_odom:
                     hit_wx = self.robot_x + dist * math.cos(self.robot_yaw + angle)
                     hit_wy = self.robot_y + dist * math.sin(self.robot_yaw + angle)
-                    if (hit_wx < (self.arena_min_x - 0.05) or hit_wx > (self.arena_max_x + 0.05) or
-                            hit_wy < (self.arena_min_y - 0.05) or hit_wy > (self.arena_max_y + 0.05)):
+                    out_x = (
+                        hit_wx < (self.arena_min_x - 0.05) or
+                        hit_wx > (self.arena_max_x + 0.05)
+                    )
+                    out_y = (
+                        hit_wy < (self.arena_min_y - 0.05) or
+                        hit_wy > (self.arena_max_y + 0.05)
+                    )
+                    if out_x or out_y:
                         continue
 
                 if dist < ranges[idx]:
@@ -1055,7 +1157,8 @@ class Khepera4Mapper(Node):
                 continue
             sx, sy, syaw = mount
             for j, r in enumerate(scan.ranges):
-                if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                valid_r = not math.isnan(r) and not math.isinf(r)
+                if valid_r and scan.range_min <= r <= scan.range_max:
                     ray_ang = syaw + (scan.angle_min + j * scan.angle_increment)
                     px = sx + r * math.cos(ray_ang)
                     py = sy + r * math.sin(ray_ang)
@@ -1067,7 +1170,8 @@ class Khepera4Mapper(Node):
                 continue
             sx, sy, syaw = mount
             for j, r in enumerate(scan.ranges):
-                if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                valid_r = not math.isnan(r) and not math.isinf(r)
+                if valid_r and scan.range_min <= r <= scan.range_max:
                     if r > 1.2:
                         continue
                     ray_ang = syaw + (scan.angle_min + j * scan.angle_increment)
@@ -1077,7 +1181,8 @@ class Khepera4Mapper(Node):
         return endpoints
 
     def _compute_pose_quality(self) -> float:
-        """Compute continuous pose quality score Q in [0.15, 1.0].
+        """
+        Compute continuous pose quality score Q in [0.15, 1.0].
 
         Downweights obstacle reinforcement during wheel slip or contact,
         preventing phantom/ghost obstacles from establishing solid belief.
@@ -1158,11 +1263,16 @@ class Khepera4Mapper(Node):
 
         # Retrieve log-odds belief values
         cell_vals = self.log_odds[safe_rows, safe_cols]
-        scores_per_point = np.where(valid_mask, np.clip(cell_vals, -self.l_free, self.l_occ * 2.0), -self.l_free)
+        clipped_vals = np.clip(cell_vals, -self.l_free, self.l_occ * 2.0)
+        scores_per_point = np.where(valid_mask, clipped_vals, -self.l_free)
         total_scores = np.sum(scores_per_point, axis=1)
 
         # Locate seed pose score (dx=0, dy=0, dyaw=0)
-        seed_mask = (np.abs(cand_dx) < 1e-4) & (np.abs(cand_dy) < 1e-4) & (np.abs(cand_dyaw) < 1e-4)
+        seed_mask = (
+            (np.abs(cand_dx) < 1e-4) &
+            (np.abs(cand_dy) < 1e-4) &
+            (np.abs(cand_dyaw) < 1e-4)
+        )
         seed_indices = np.where(seed_mask)[0]
         seed_score = total_scores[seed_indices[0]] if len(seed_indices) > 0 else total_scores[0]
 
@@ -1298,7 +1408,7 @@ class Khepera4Mapper(Node):
                         if self.hit_count[row, col] > 0:
                             self.hit_count[row, col] -= 1
 
-                        # If cell is confirmed solid wall, stop ray from penetrating behind it on this pass
+                        # Stop ray if cell is confirmed solid wall
                         is_solid_wall = (
                             self.hit_count[row, col] >= self.hit_count_confirm_threshold or
                             self.log_odds[row, col] >= self.l_occ
@@ -1316,7 +1426,8 @@ class Khepera4Mapper(Node):
         for scan in self.latest_ir:
             if scan is not None and scan.ranges:
                 for r in scan.ranges:
-                    if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                    valid_r = not math.isnan(r) and not math.isinf(r)
+                    if valid_r and scan.range_min <= r <= scan.range_max:
                         if r < min_ir_dist:
                             min_ir_dist = r
 
@@ -1378,7 +1489,7 @@ class Khepera4Mapper(Node):
                         if self.hit_count[row, col] > 0:
                             self.hit_count[row, col] -= 1
 
-                        # If cell is confirmed solid wall, stop ray from penetrating behind it on this pass
+                        # Stop ray if cell is confirmed solid wall
                         is_solid_wall = (
                             self.hit_count[row, col] >= self.hit_count_confirm_threshold or
                             self.log_odds[row, col] >= self.l_occ
@@ -1395,12 +1506,14 @@ class Khepera4Mapper(Node):
         """Update elevation map, roughness map, and carve free space under robot footprint."""
         cr, rr = self.world_to_grid(self.robot_x, self.robot_y)
         robot_radius_cells = int(math.ceil(0.070 / self.res))
-        carve_radius_sq = (0.060) ** 2  # 60 mm inner radius protects perimeter walls during glancing scrapes
+        # 60 mm inner radius protects perimeter walls during glancing scrapes
+        carve_radius_sq = (0.060) ** 2
 
         slope_val = int(np.clip(round(self.current_slope_deg), 0, 100))
         roughness_val = self.current_roughness
 
-        can_carve = self.enable_footprint_carving and not (self.is_wheel_slipping and self.is_near_contact)
+        slip_contact = self.is_wheel_slipping and self.is_near_contact
+        can_carve = self.enable_footprint_carving and not slip_contact
 
         for dcol in range(-robot_radius_cells, robot_radius_cells + 1):
             for drow in range(-robot_radius_cells, robot_radius_cells + 1):
@@ -1442,12 +1555,47 @@ class Khepera4Mapper(Node):
         msg.data = data
         publisher.publish(msg)
 
+    def visual_image_callback(self, msg: RosImage):
+        """Update cached high-res visual orthomap from /visual_map/image."""
+        try:
+            h, w = msg.height, msg.width
+            if h == self.height and w == self.width:
+                if msg.encoding == 'rgba8':
+                    arr = np.frombuffer(msg.data, dtype=np.uint8).reshape((h, w, 4))
+                    self.visual_grid = arr[:, :, :3].copy()
+                    self.has_visual_map = True
+                elif msg.encoding == 'rgb8':
+                    arr = np.frombuffer(msg.data, dtype=np.uint8).reshape((h, w, 3))
+                    self.visual_grid = arr.copy()
+                    self.has_visual_map = True
+        except Exception as e:
+            self.get_logger().debug(f'Error unpacking /visual_map/image: {e}')
+
+    def visual_grid_callback(self, msg: OccupancyGrid):
+        """Fallback updater for visual map from /visual_map (OccupancyGrid)."""
+        if not self.has_visual_map:
+            try:
+                h, w = msg.info.height, msg.info.width
+                if h == self.height and w == self.width:
+                    data = np.array(msg.data, dtype=np.int8).reshape((h, w))
+                    obs_mask = (data >= 0)
+                    gray = np.clip(
+                        np.round(data.astype(np.float32) * (255.0 / 100.0)),
+                        0,
+                        255
+                    ).astype(np.uint8)
+                    v_rgb = np.full((h, w, 3), 200, dtype=np.uint8)
+                    v_rgb[obs_mask] = np.repeat(gray[obs_mask, np.newaxis], 3, axis=1)
+                    self.visual_grid = v_rgb
+            except Exception as e:
+                self.get_logger().debug(f'Error unpacking /visual_map: {e}')
+
     # ==========================================================================
     # Task 1.e: Map Persistence & Memory (save, load, clear)
     # ==========================================================================
 
     def save_map_callback(self, request, response):
-        """Save map as ROS standard PGM + YAML and high-res color PNG."""
+        """Save map as ROS standard PGM + YAML, color PNG, and composite visual map."""
         try:
             save_dir = os.path.abspath(self.map_save_dir)
             os.makedirs(save_dir, exist_ok=True)
@@ -1455,6 +1603,7 @@ class Khepera4Mapper(Node):
             pgm_path = os.path.join(save_dir, 'khepera_map.pgm')
             yaml_path = os.path.join(save_dir, 'khepera_map.yaml')
             png_path = os.path.join(save_dir, 'khepera_map.png')
+            visual_map_path = os.path.join(save_dir, 'khepera_visual_map.png')
 
             # 1. Generate ROS PGM file
             grid = np.full((self.height, self.width), 205, dtype=np.uint8)
@@ -1516,6 +1665,34 @@ class Khepera4Mapper(Node):
 
             pil_img.save(png_path)
 
+            # 4. Generate composite high-resolution visual map (khepera_visual_map.png)
+            kf_dir = os.path.join(save_dir, 'keyframes')
+            manifest_path = os.path.join(kf_dir, 'manifest.json')
+            keyframes = []
+            if os.path.exists(manifest_path):
+                try:
+                    with open(manifest_path, 'r', encoding='utf-8') as f:
+                        m_data = json.load(f)
+                        keyframes = m_data.get('keyframes', [])
+                except Exception as e:
+                    self.get_logger().warn(f'Failed to load keyframe manifest: {e}')
+
+            generate_composite_map(
+                visual_map_path,
+                self.visual_grid,
+                self.log_odds,
+                self.elevation_grid,
+                self.surface_grid,
+                self.robot_path,
+                keyframes,
+                res=self.res,
+                origin_x=self.origin_x,
+                origin_y=self.origin_y,
+                current_pose=(
+                    (self.robot_x, self.robot_y, self.robot_yaw) if self.has_odom else None
+                )
+            )
+
             self.get_logger().info(f'Successfully saved persistent map files to {save_dir}/')
             response.success = True
             response.message = f'Map successfully saved to {save_dir}/ (pgm, yaml, png)'
@@ -1574,11 +1751,13 @@ class Khepera4Mapper(Node):
         return response
 
     def clear_map_callback(self, request, response):
-        """Reset map, elevation map, surface map, and trajectory memory."""
+        """Reset map, elevation map, surface map, trajectory, and keyframes."""
         self.log_odds = np.zeros((self.height, self.width), dtype=np.float32)
         self.hit_count.fill(0)
         self.elevation_grid = np.full((self.height, self.width), -1, dtype=np.int8)
         self.surface_grid = np.full((self.height, self.width), -1, dtype=np.int8)
+        self.visual_grid = np.full((self.height, self.width, 3), 200, dtype=np.uint8)
+        self.has_visual_map = False
         if self.has_odom:
             self.robot_path = [(self.robot_x, self.robot_y)]
         else:
@@ -1589,16 +1768,59 @@ class Khepera4Mapper(Node):
         self._publish_grid(self.elevation_pub, self.elevation_grid.flatten().tolist(), now)
         self._publish_grid(self.surface_pub, self.surface_grid.flatten().tolist(), now)
 
-        self.get_logger().info('Map memory cleared.')
+        # Clean maps/keyframes directory and reset manifest
+        try:
+            save_dir = os.path.abspath(self.map_save_dir)
+            kf_dir = os.path.join(save_dir, 'keyframes')
+            if os.path.exists(kf_dir):
+                for fname in os.listdir(kf_dir):
+                    if fname.endswith('.png'):
+                        try:
+                            os.remove(os.path.join(kf_dir, fname))
+                        except Exception:
+                            pass
+            else:
+                os.makedirs(kf_dir, exist_ok=True)
+
+            manifest_path = os.path.join(kf_dir, 'manifest.json')
+            empty_manifest = {
+                'map_frame': self.map_frame,
+                'manifest_version': '1.0',
+                'total_keyframes': 0,
+                'last_updated': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'keyframes': []
+            }
+            tmp_path = manifest_path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(empty_manifest, f, indent=2)
+            os.replace(tmp_path, manifest_path)
+        except Exception as e:
+            self.get_logger().warn(f'Failed to clear keyframe directory: {e}')
+
+        # Notify visual_orthomapper service if available
+        try:
+            cli = getattr(self, 'clear_visual_map_cli', None)
+            if cli is not None and cli.service_is_ready():
+                cli.call_async(Trigger.Request())
+        except Exception:
+            pass
+
+        self.get_logger().info('Map memory and keyframe manifest cleared.')
         response.success = True
         response.message = 'Maps reset and cleared successfully.'
         return response
 
     def recenter_robot_callback(self, request, response):
         """Respawn Khepera IV at arena center rightside up in Gazebo and reset mapper state."""
-        self.get_logger().info('Recenter service triggered: respawning robot at arena center rightside up.')
+        self.get_logger().info(
+            'Recenter service triggered: respawning robot at arena center rightside up.'
+        )
 
         # 1. Teleport model in Gazebo Harmonic via UserCommands set_pose service
+        pose_req = (
+            'name: "khepera4", position: {x: 0.0, y: 0.0, z: 0.03}, '
+            'orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}'
+        )
         for world_name in ['khepera4_world', 'default']:
             try:
                 cmd = [
@@ -1606,11 +1828,13 @@ class Khepera4Mapper(Node):
                     '--reqtype', 'gz.msgs.Pose',
                     '--reptype', 'gz.msgs.Boolean',
                     '--timeout', '1500',
-                    '--req', 'name: "khepera4", position: {x: 0.0, y: 0.0, z: 0.03}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}'
+                    '--req', pose_req
                 ]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0)
                 if 'data: true' in res.stdout:
-                    self.get_logger().info(f'Gazebo set_pose succeeded on /world/{world_name}/set_pose')
+                    self.get_logger().info(
+                        f'Gazebo set_pose succeeded on /world/{world_name}/set_pose'
+                    )
                     break
             except Exception as e:
                 self.get_logger().debug(f'Gazebo set_pose on {world_name} note: {e}')

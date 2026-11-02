@@ -181,6 +181,34 @@ def generate_launch_description():
         }]
     )
 
+    # 2.b Visual Orthomosaic Mapper (Ground IPM & Visual Map)
+    visual_orthomapper_node = Node(
+        package='khepera4_control',
+        executable='visual_orthomapper',
+        name='visual_orthomapper',
+        output='screen',
+        parameters=[{
+            'use_sim_time': effective_use_sim_time,
+            'map_resolution': 0.03,
+            'map_width': 200,
+            'map_height': 200,
+            'map_origin_x': -3.0,
+            'map_origin_y': -3.0,
+            'map_frame': 'map',
+            'robot_frame': 'base_footprint',
+            'odom_topic': '/khepera4/odom',
+            'raw_odom_topic': '/odom',
+            'image_topic': '/camera/image_raw',
+            'camera_info_topic': '/camera/camera_info',
+            'cliff_topic': '/cliff_alert',
+            'visual_map_topic': '/visual_map',
+            'visual_map_image_topic': '/visual_map/image',
+            'map_publish_rate': 3.0,
+            'alpha': 0.25,
+            'pitch_guard_deg': 6.0
+        }]
+    )
+
     # 3. Autonomous Reactive Explorer Node (Conditional)
     explorer_node = Node(
         package='khepera4_control',
@@ -237,6 +265,7 @@ def generate_launch_description():
         robot_state_pub_node,
         hardware_bridge_node,
         mapper_node,
+        visual_orthomapper_node,
         explorer_node,
         dashboard_node,
         rviz_node

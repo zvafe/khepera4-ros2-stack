@@ -88,6 +88,7 @@ def generate_launch_description():
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             '/camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU',
             # 5 Ultrasonic scans (0.20m - 2.0m)
             '/khepera4/us_0/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',

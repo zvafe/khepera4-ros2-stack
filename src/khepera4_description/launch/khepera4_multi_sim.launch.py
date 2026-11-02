@@ -125,6 +125,7 @@ def generate_launch_description():
             f'/{name}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             f'/{name}/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             f'/{name}/camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            f'/{name}/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             f'/{name}/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU'
         ])
 

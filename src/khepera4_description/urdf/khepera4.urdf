@@ -265,6 +265,7 @@
           <near>0.05</near>
           <far>10.0</far>
         </clip>
+        <optical_frame_id>camera_optical_frame</optical_frame_id>
       </camera>
       <topic>/camera/image_raw</topic>
     </sensor>

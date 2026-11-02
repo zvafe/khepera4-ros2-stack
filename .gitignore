@@ -48,4 +48,11 @@ telemetry/
 # Native binaries & runtime artifacts
 physical_robot/onboard_daemon/khepera4_tcp_server_mock
 physical_robot/onboard_daemon/khepera4_tcp_server
+
+# Map exports & runtime camera keyframe captures
 maps/*.png
+maps/keyframes/
+
+# Test & coverage artifacts
+.coverage*
+coverage.xml

@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 Mobile Robotics Laboratory.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Khepera IV Dedicated Mapping & Spatial Exploration Dashboard.
 
@@ -14,6 +28,7 @@ Features:
   * 2D Probabilistic Obstacle Grid (/map)
   * 2.5D Terrain Slope Elevation Map (/elevation_map)
   * Surface Classification & Cliff Hazard Map (/surface_map)
+  * Ground-Plane Visual Orthomap (/visual_map)
   * Real-time Khepera IV footprint, heading vector, trajectory path history
   * IR close-range (orange) and Ultrasonic medium-range (cyan) sensor beam overlay
 - Map Persistence Memory: Save, Load, Clear map services
@@ -27,7 +42,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -38,7 +53,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette
+from PyQt5.QtGui import QColor, QFont, QImage, QKeyEvent, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox,
     QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
@@ -52,7 +67,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry, Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Imu, LaserScan, Image as RosImage
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
 
@@ -429,6 +444,8 @@ class MappingRosWorker(QObject):
     explorer_state_received = pyqtSignal(bool)
     active_goal_received = pyqtSignal(float, float)
     screenshot_requested = pyqtSignal(str)
+    camera_received = pyqtSignal(object)              # sensor_msgs/Image
+    visual_map_received = pyqtSignal(object)          # nav_msgs/OccupancyGrid
 
     def __init__(self):
         super().__init__()
@@ -441,6 +458,8 @@ class MappingRosWorker(QObject):
         self.save_map_cli = None
         self.load_map_cli = None
         self.clear_map_cli = None
+        self.clear_visual_map_cli = None
+        self.pin_keyframe_cli = None
         self.recenter_cli = None
         self.set_exp_cli = None
         self.toggle_exp_cli = None
@@ -479,6 +498,8 @@ class MappingRosWorker(QObject):
         self.save_map_cli = self.node.create_client(Trigger, '/save_map')
         self.load_map_cli = self.node.create_client(Trigger, '/load_map')
         self.clear_map_cli = self.node.create_client(Trigger, '/clear_map')
+        self.clear_visual_map_cli = self.node.create_client(Trigger, '/clear_visual_map')
+        self.pin_keyframe_cli = self.node.create_client(Trigger, '/pin_keyframe')
         self.recenter_cli = self.node.create_client(Trigger, '/recenter_robot')
         self.set_exp_cli = self.node.create_client(SetBool, '/set_explorer')
         self.toggle_exp_cli = self.node.create_client(Trigger, '/toggle_explorer')
@@ -491,6 +512,7 @@ class MappingRosWorker(QObject):
         self.node.create_subscription(OccupancyGrid, '/map', lambda m: self.map_received.emit(m), qos_latched)
         self.node.create_subscription(OccupancyGrid, '/elevation_map', lambda m: self.elevation_received.emit(m), qos_latched)
         self.node.create_subscription(OccupancyGrid, '/surface_map', lambda m: self.surface_received.emit(m), qos_latched)
+        self.node.create_subscription(OccupancyGrid, '/visual_map', lambda m: self.visual_map_received.emit(m), qos_latched)
         self.node.create_subscription(LaserScan, '/khepera4/scan', lambda m: self.scan_received.emit(m), 10)
         self.node.create_subscription(Bool, '/cliff_alert', lambda m: self.cliff_alert_received.emit(m.data), 10)
         self.node.create_subscription(Bool, '/khepera4/turned_over', lambda m: self.turned_over_received.emit(m.data), 10)
@@ -498,6 +520,8 @@ class MappingRosWorker(QObject):
         self.node.create_subscription(Bool, '/explorer/enable', lambda m: self.explorer_state_received.emit(m.data), 10)
         self.node.create_subscription(PointStamped, '/explorer/active_goal', self._active_goal_cb, 10)
         self.node.create_subscription(String, '/dashboard/screenshot', lambda m: self.screenshot_requested.emit(m.data), 10)
+        self.node.create_subscription(RosImage, '/camera/image_raw', lambda m: self.camera_received.emit(m), 10)
+        self.node.create_subscription(RosImage, '/khepera4/camera/image_raw', lambda m: self.camera_received.emit(m), 10)
 
     @property
     def using_fused_odom(self) -> bool:
@@ -759,9 +783,7 @@ class MappingRosWorker(QObject):
 # Main Mapping Dashboard Window
 # ==============================================================================
 class MappingDashboardWindow(QMainWindow):
-    """
-    Dedicated Single-Robot Environment Mapping & Exploration Dashboard.
-    """
+    """Dedicated Single-Robot Environment Mapping & Exploration Dashboard."""
 
     def __init__(self, ros_worker: Optional[MappingRosWorker] = None):
         super().__init__()
@@ -806,16 +828,27 @@ class MappingDashboardWindow(QMainWindow):
         self.latest_map: Optional[OccupancyGrid] = None
         self.latest_elevation: Optional[OccupancyGrid] = None
         self.latest_surface: Optional[OccupancyGrid] = None
+        self.latest_visual_map: Optional[OccupancyGrid] = None
         self.latest_scan: Optional[LaserScan] = None
 
         # Canvas View Settings
-        self.map_layer_mode = 'obstacles'   # 'obstacles', 'elevation', 'surface'
+        self.map_layer_mode = 'obstacles'   # 'obstacles', 'elevation', 'surface', 'visual'
         self.show_sensor_beams = True
         self.show_trajectory = True
         self.show_grid = True
+        self.show_camera_fov = True
         self.zoom_level = 1.0
         self.view_offset_x = 0.0
         self.view_offset_y = 0.0
+
+        # Camera & Visual Mapping State
+        self.latest_camera_frame: Optional[np.ndarray] = None
+        self.camera_frame_count = 0
+        self.last_cam_fps_time = time.time()
+        self.cam_fps = 0.0
+        self.visual_keyframes: List[Tuple[float, float, float, np.ndarray, str]] = []
+        self.fov_patch: Optional[Polygon] = None
+        self.keyframe_artists: List[Tuple[Any, Any]] = []
 
         # Build UI
         self.init_ui()
@@ -834,6 +867,8 @@ class MappingDashboardWindow(QMainWindow):
             self.ros.explorer_state_received.connect(self.on_explorer_state_received)
             self.ros.active_goal_received.connect(self.on_active_goal_received)
             self.ros.screenshot_requested.connect(self._on_save_screenshot)
+            self.ros.camera_received.connect(self.on_camera_received)
+            self.ros.visual_map_received.connect(self.on_visual_map_received)
 
         # Install application event filter for uninterrupted WASD keyboard teleop
         app = QApplication.instance()
@@ -1051,6 +1086,41 @@ class MappingDashboardWindow(QMainWindow):
         exp_layout.addWidget(self.lbl_draw_info)
         left_layout.addWidget(explore_group)
 
+        # 3b. Onboard CMOS Camera Feed & Visual Landmarks GroupBox
+        cam_group = QGroupBox("Onboard CMOS Camera (640x480)")
+        cam_layout = QVBoxLayout(cam_group)
+        cam_layout.setSpacing(4)
+
+        self.lbl_camera_view = QLabel("Awaiting /camera/image_raw stream...")
+        self.lbl_camera_view.setAlignment(Qt.AlignCenter)
+        self.lbl_camera_view.setFixedHeight(160)
+        self.lbl_camera_view.setStyleSheet(
+            "background-color: #020617; border: 1px solid #1e293b; border-radius: 4px; "
+            "color: #64748b; font-family: monospace; font-size: 10px;"
+        )
+        cam_layout.addWidget(self.lbl_camera_view)
+
+        cam_bar = QWidget()
+        cb_layout = QHBoxLayout(cam_bar)
+        cb_layout.setContentsMargins(0, 0, 0, 0)
+        cb_layout.setSpacing(4)
+
+        self.lbl_camera_status = QLabel("STANDBY | 640x480 | 60° FOV")
+        self.lbl_camera_status.setStyleSheet("color: #94a3b8; font-size: 9px; font-family: monospace;")
+        self.btn_pin_view = QPushButton("📷 Pin View to Map")
+        self.btn_pin_view.setCursor(Qt.PointingHandCursor)
+        self.btn_pin_view.setStyleSheet(
+            "background-color: #0f766e; border: 1px solid #14b8a6; border-radius: 4px; "
+            "color: #ccfbf1; font-weight: bold; font-size: 10px; padding: 3px 6px;"
+        )
+        self.btn_pin_view.clicked.connect(self.on_pin_view_to_map)
+
+        cb_layout.addWidget(self.lbl_camera_status, stretch=1)
+        cb_layout.addWidget(self.btn_pin_view)
+        cam_layout.addWidget(cam_bar)
+
+        left_layout.addWidget(cam_group)
+
         # 4. Attitude & Terrain HUD GroupBox
         hud_group = QGroupBox("Attitude && Terrain HUD")
         hud_layout = QVBoxLayout(hud_group)
@@ -1185,9 +1255,10 @@ class MappingDashboardWindow(QMainWindow):
         lbl_layer.setStyleSheet("font-weight: bold; color: #38bdf8;")
         self.combo_layer = QComboBox()
         self.combo_layer.addItems([
-            "2D Obstacle Map (/map)",
-            "2.5D Elevation Map (/elevation_map)",
-            "Surface & Cliff Map (/surface_map)"
+            '2D Obstacle Map (/map)',
+            '2.5D Elevation Map (/elevation_map)',
+            'Surface & Cliff Map (/surface_map)',
+            'Visual Orthomap (/visual_map)'
         ])
         self.combo_layer.currentIndexChanged.connect(self.on_layer_changed)
 
@@ -1195,6 +1266,11 @@ class MappingDashboardWindow(QMainWindow):
         self.chk_sensor_rays.setChecked(True)
         self.chk_sensor_rays.setStyleSheet("color: #38bdf8; font-weight: bold;")
         self.chk_sensor_rays.toggled.connect(self.on_sensor_rays_toggled)
+
+        self.chk_camera_fov = QCheckBox("Camera FOV")
+        self.chk_camera_fov.setChecked(True)
+        self.chk_camera_fov.setStyleSheet("color: #0ea5e9; font-weight: bold;")
+        self.chk_camera_fov.toggled.connect(self.on_camera_fov_toggled)
 
         self.chk_trajectory = QCheckBox("Trajectory")
         self.chk_trajectory.setChecked(True)
@@ -1218,6 +1294,7 @@ class MappingDashboardWindow(QMainWindow):
         tb_layout.addWidget(lbl_layer)
         tb_layout.addWidget(self.combo_layer)
         tb_layout.addWidget(self.chk_sensor_rays)
+        tb_layout.addWidget(self.chk_camera_fov)
         tb_layout.addWidget(self.chk_trajectory)
         tb_layout.addWidget(self.chk_grid)
         tb_layout.addStretch()
@@ -1527,8 +1604,14 @@ class MappingDashboardWindow(QMainWindow):
         timestamp = time.strftime("%H:%M:%S")
         self.lbl_map_toast.setText(f"[{timestamp}] Resetting and clearing spatial maps...")
         self.robot_path.clear()
+        self.visual_keyframes.clear()
+        self.keyframe_artists.clear()
+        self.latest_visual_map = None
         if self.ros:
             self.ros.trigger_service(self.ros.clear_map_cli, "Clear Map")
+            if hasattr(self.ros, 'clear_visual_map_cli') and self.ros.clear_visual_map_cli:
+                self.ros.trigger_service(self.ros.clear_visual_map_cli, 'Clear Visual Map')
+        self.update_map_plot()
 
     def on_feedback_received(self, msg: str):
         timestamp = time.strftime("%H:%M:%S")
@@ -1644,19 +1727,64 @@ class MappingDashboardWindow(QMainWindow):
     def on_surface_received(self, msg: OccupancyGrid):
         self.latest_surface = msg
 
+    def on_visual_map_received(self, msg: OccupancyGrid):
+        self.latest_visual_map = msg
+
     def on_scan_received(self, msg: LaserScan):
         self.latest_scan = msg
+
+    def on_camera_received(self, msg: RosImage):
+        try:
+            if msg.encoding in ('rgb8', 'bgr8'):
+                h, w = msg.height, msg.width
+                img_arr = np.frombuffer(msg.data, dtype=np.uint8).reshape((h, w, 3))
+                rgb_arr = img_arr if msg.encoding == 'rgb8' else img_arr[:, :, ::-1]
+                self.latest_camera_frame = rgb_arr.copy()
+
+                qimg = QImage(rgb_arr.data, w, h, w * 3, QImage.Format_RGB888).copy()
+                lbl_w = max(160, self.lbl_camera_view.width())
+                lbl_h = max(120, self.lbl_camera_view.height())
+                pixmap = QPixmap.fromImage(qimg).scaled(lbl_w, lbl_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.lbl_camera_view.setPixmap(pixmap)
+
+                self.camera_frame_count += 1
+                now = time.time()
+                dt = now - self.last_cam_fps_time
+                if dt >= 1.0:
+                    self.cam_fps = self.camera_frame_count / dt
+                    self.camera_frame_count = 0
+                    self.last_cam_fps_time = now
+                    self.lbl_camera_status.setText(f"ONLINE | {w}x{h} @ {self.cam_fps:.1f} FPS")
+                    self.lbl_camera_status.setStyleSheet("color: #10b981; font-weight: bold; font-size: 9px;")
+        except Exception:
+            pass
+
+    def on_pin_view_to_map(self):
+        """Pin current camera view to the generated map at current robot pose."""
+        if not self.has_received_odom or self.latest_camera_frame is None:
+            self.lbl_camera_status.setText("Awaiting frame / odom")
+            return
+        kf_idx = len(self.visual_keyframes) + 1
+        t_str = time.strftime("%H:%M:%S")
+        self.visual_keyframes.append((self.robot_x, self.robot_y, self.robot_yaw, self.latest_camera_frame.copy(), f"KF #{kf_idx} ({t_str})"))
+        self.lbl_camera_status.setText(f"Pinned Keyframe #{kf_idx} ({t_str})")
+        self.lbl_camera_status.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 9px;")
+        self.update_map_plot()
 
     # --------------------------------------------------------------------------
     # Map Toolbar Slots
     # --------------------------------------------------------------------------
     def on_layer_changed(self, idx: int):
-        modes = ['obstacles', 'elevation', 'surface']
+        modes = ['obstacles', 'elevation', 'surface', 'visual']
         self.map_layer_mode = modes[idx] if idx < len(modes) else 'obstacles'
         self.update_map_plot()
 
     def on_sensor_rays_toggled(self, checked: bool):
         self.show_sensor_beams = checked
+        self.update_map_plot()
+
+    def on_camera_fov_toggled(self, checked: bool):
+        self.show_camera_fov = checked
         self.update_map_plot()
 
     def on_trajectory_toggled(self, checked: bool):
@@ -1701,9 +1829,10 @@ class MappingDashboardWindow(QMainWindow):
         self.ax_map.set_ylabel("Y [meters]", color='#94a3b8', fontsize=8, labelpad=2)
 
         layer_title_map = {
-            'obstacles': "2D Probabilistic SLAM Obstacle Grid (/map)",
-            'elevation': "2.5D Terrain Slope Elevation Map (/elevation_map)",
-            'surface': "Surface Classification & Cliff Hazard Map (/surface_map)"
+            'obstacles': '2D Probabilistic SLAM Obstacle Grid (/map)',
+            'elevation': '2.5D Terrain Slope Elevation Map (/elevation_map)',
+            'surface': 'Surface Classification & Cliff Hazard Map (/surface_map)',
+            'visual': 'Visual Orthomap (/visual_map)'
         }
         self.ax_map.set_title(
             f"Khepera IV Spatial SLAM — {layer_title_map.get(self.map_layer_mode, '')}",
@@ -1787,6 +1916,33 @@ class MappingDashboardWindow(QMainWindow):
             except Exception:
                 pass
 
+        # 3b. Render Ground Visual Orthomap Layer
+        elif self.map_layer_mode == 'visual' and self.latest_visual_map is not None:
+            try:
+                info = self.latest_visual_map.info
+                w, h = info.width, info.height
+                res = info.resolution
+                ox = info.origin.position.x
+                oy = info.origin.position.y
+                data = np.array(self.latest_visual_map.data, dtype=np.int8).reshape((h, w))
+                rgba = np.zeros((h, w, 4), dtype=np.float32)
+
+                # Observed floor cells (reflectance 0..100)
+                observed = (data >= 0)
+                gray_val = (data[observed] / 100.0).astype(np.float32)
+                rgba[observed, 0] = gray_val
+                rgba[observed, 1] = gray_val
+                rgba[observed, 2] = gray_val
+                rgba[observed, 3] = 0.90
+
+                extent = [ox, ox + w * res, oy, oy + h * res]
+                self.ax_map.imshow(
+                    rgba, origin='lower', extent=extent, interpolation='nearest', zorder=1
+                )
+                has_rendered_grid = True
+            except Exception:
+                pass
+
         # Draw Arena Outline if no map loaded yet
         if not has_rendered_grid:
             arena_rect = plt.Rectangle((-3.0, -3.0), 6.0, 6.0, fill=True,
@@ -1845,6 +2001,40 @@ class MappingDashboardWindow(QMainWindow):
                         self.ax_map.plot(hit_x, hit_y, '.', color=color, markersize=3.5, alpha=0.85, zorder=4)
             except Exception:
                 pass
+
+        # 5b. Draw Camera Sightline / FOV Frustum (HFOV = 60 deg, 0.75m visual cone)
+        self.fov_patch = None
+        if self.show_camera_fov and self.has_received_odom:
+            try:
+                cam_x = rx + 0.0682 * math.cos(ryaw)
+                cam_y = ry + 0.0682 * math.sin(ryaw)
+                fov_dist = 0.75
+                half_fov = 0.5236  # 30 degrees (pi/6)
+                p_left = (cam_x + fov_dist * math.cos(ryaw + half_fov),
+                          cam_y + fov_dist * math.sin(ryaw + half_fov))
+                p_right = (cam_x + fov_dist * math.cos(ryaw - half_fov),
+                           cam_y + fov_dist * math.sin(ryaw - half_fov))
+
+                fov_wedge = Polygon([(cam_x, cam_y), p_left, p_right], closed=True,
+                                    facecolor='#38bdf8', edgecolor='#0284c7',
+                                    linewidth=1.2, alpha=0.18, linestyle='--', zorder=4)
+                self.ax_map.add_patch(fov_wedge)
+                self.fov_patch = fov_wedge
+            except Exception:
+                pass
+
+        # 5c. Draw Visual Keyframe Photo Pins on Map
+        self.keyframe_artists.clear()
+        for idx, (kx, ky, kyaw, _, label) in enumerate(self.visual_keyframes):
+            line_artist = self.ax_map.plot(
+                kx, ky, 's', color='#f59e0b', markersize=6.5,
+                markeredgecolor='#ffffff', markeredgewidth=1.2, zorder=6
+            )[0]
+            text_artist = self.ax_map.text(
+                kx + 0.04, ky + 0.04, f"📷 #{idx + 1}",
+                color='#fef08a', fontsize=7.5, fontweight='bold', zorder=7
+            )
+            self.keyframe_artists.append((line_artist, text_artist))
 
         # 6. Draw Khepera IV True-Scale Footprint (Radius: 0.070 m = 140 mm diameter)
         khep_circle = Circle((rx, ry), 0.070, facecolor='#0284c7', edgecolor='#7dd3fc',
