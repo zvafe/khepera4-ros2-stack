@@ -182,9 +182,12 @@ case "${1:-}" in
     status) cmd_status ;;
     ssh) cmd_ssh "${2:-1}" ;;
     stream-camera|camera) cmd_stream_camera "${2:-1}" ;;
+    serial|provision)
+        python3 "${SCRIPT_DIR}/khepera_serial_provisioner.py" "${@:2}"
+        ;;
     *)
         print_header
-        echo "Usage: $0 {ping|deploy|start|stop|status|ssh [1-3]|stream-camera [1-3]}"
+        echo "Usage: $0 {ping|deploy|start|stop|status|ssh [1-3]|stream-camera [1-3]|serial}"
         echo ""
         echo "Commands:"
         echo "  ping           Check network latency to all 3 robots"
@@ -194,6 +197,7 @@ case "${1:-}" in
         echo "  status         Check daemon process status on each robot"
         echo "  ssh [1-3]      Open interactive root SSH shell into chosen robot"
         echo "  stream-camera  Open live camera stream from chosen robot"
+        echo "  serial         USB serial programming, Wi-Fi provisioning & swarm setup"
         exit 1
         ;;
 esac

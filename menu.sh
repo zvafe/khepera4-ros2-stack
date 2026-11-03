@@ -247,9 +247,10 @@ menu_physical_lab() {
     echo " 3) Connect Single Robot: Bridge + Mapper + Dashboard + RViz2"
     echo " 4) Launch Keyboard Teleoperation (/cmd_vel)"
     echo " 5) Save Active 2D Map to maps/"
-    echo " 6) Back to Main Menu"
+    echo " 6) USB Serial Programming & Swarm Provisioner (First-time setup / Recovery)"
+    echo " 7) Back to Main Menu"
     echo ""
-    read -r -p "Select option [1-6]: " choice
+    read -r -p "Select option [1-7]: " choice
 
     case "$choice" in
         1)
@@ -274,6 +275,10 @@ menu_physical_lab() {
             read -r -p "Press [Enter] to continue..."
             ;;
         6)
+            python3 "${WS_ROOT}/physical_robot/khepera_serial_provisioner.py"
+            read -r -p "Press [Enter] to continue..."
+            ;;
+        7)
             return
             ;;
         *)
