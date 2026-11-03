@@ -31,7 +31,24 @@
 #include <sys/time.h>
 
 #ifdef HAVE_LIBKHEPERA
+#if __has_include(<khepera/khepera.h>)
 #include <khepera/khepera.h>
+#else
+typedef struct knet_dev_s knet_dev_t;
+#define KNET_BUS_I2C 1
+#define kh4RegSpeed 1
+
+extern void kb_set_debug_level(int level);
+extern int kb_init(int argc, char *argv[]);
+extern knet_dev_t *knet_open(const char *dev_name, int bus, int opt, void *extra);
+extern int kh4_ConfigurePID(int p, int i, int d, knet_dev_t *dev);
+extern int kh4_SetMode(int mode, knet_dev_t *dev);
+extern int kh4_set_speed(int l, int r, knet_dev_t *dev);
+extern int kh4_get_position(int *l, int *r, knet_dev_t *dev);
+extern int kh4_proximity_ir(char *buf, knet_dev_t *dev);
+extern int kh4_measure_us(char *buf, knet_dev_t *dev);
+extern int kh4_battery_status(char *buf, knet_dev_t *dev);
+#endif
 #endif
 
 #define DEFAULT_PORT 5000
@@ -137,7 +154,8 @@ void process_ascii_command(const char *cmd, char *response, size_t max_resp) {
             kh4_proximity_ir((char *)raw_ir, dsPic);
             /* Parse 12 sensor values without signed-char promotion */
             int ir[12];
-            for (int i = 0; i < 12; i++) {
+            int i;
+            for (i = 0; i < 12; i++) {
                 ir[i] = (int)(raw_ir[i*2] | ((unsigned int)raw_ir[i*2 + 1] << 8));
             }
             snprintf(response, max_resp, "n,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\r\n",
@@ -155,7 +173,8 @@ void process_ascii_command(const char *cmd, char *response, size_t max_resp) {
         if (dsPic != NULL) {
             unsigned char us_raw[16];
             kh4_measure_us((char *)us_raw, dsPic);
-            for (int i = 0; i < 5; i++) {
+            int i;
+            for (i = 0; i < 5; i++) {
                 us[i] = (int)(us_raw[i*2] | ((unsigned int)us_raw[i*2 + 1] << 8));
             }
         }
@@ -277,7 +296,8 @@ int main(int argc, char *argv[]) {
 
             if (n > 0) {
                 buffer[n] = '\0';
-                for (int i = 0; i < n; i++) {
+                int i;
+                for (i = 0; i < n; i++) {
                     char c = buffer[i];
                     if (c == '\n' || c == '\r') {
                         if (line_pos > 0) {

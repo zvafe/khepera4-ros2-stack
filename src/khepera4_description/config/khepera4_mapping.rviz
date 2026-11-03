@@ -11,7 +11,7 @@ Panels:
         - /LaserScan1
         - /PointCloud3D1
       Splitter Ratio: 0.5
-    Tree Height: 187
+    Tree Height: 365
 Visualization Manager:
   Class: ""
   Displays:
@@ -237,8 +237,57 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
-        odom:
-          {}
+        map:
+          odom:
+            base_footprint:
+              base_link:
+                camera_link:
+                  camera_optical_frame:
+                    {}
+                front_caster:
+                  {}
+                ground_ir_0_link:
+                  {}
+                ground_ir_1_link:
+                  {}
+                ground_ir_2_link:
+                  {}
+                ground_ir_3_link:
+                  {}
+                imu_link:
+                  {}
+                ir_0_link:
+                  {}
+                ir_1_link:
+                  {}
+                ir_2_link:
+                  {}
+                ir_3_link:
+                  {}
+                ir_4_link:
+                  {}
+                ir_5_link:
+                  {}
+                ir_6_link:
+                  {}
+                ir_7_link:
+                  {}
+                left_wheel:
+                  {}
+                rear_caster:
+                  {}
+                right_wheel:
+                  {}
+                us_0_link:
+                  {}
+                us_1_link:
+                  {}
+                us_2_link:
+                  {}
+                us_3_link:
+                  {}
+                us_4_link:
+                  {}
       Update Interval: 0
       Value: true
     - Alpha: 0.699999988079071
@@ -373,12 +422,11 @@ Visualization Manager:
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.03
+      Size (m): 0.029999999329447746
       Style: Flat Squares
       Topic:
         Depth: 5
         Durability Policy: Transient Local
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /khepera4/pointcloud3d
@@ -404,35 +452,35 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 5.8895721435546875
+      Distance: 6.501333713531494
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.0
-        Y: 0.0
-        Z: 0.1
+        X: 0
+        Y: 0
+        Z: 0.10000000149011612
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6
+      Pitch: 0.60
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 2.35
+      Yaw: 1.0899999141693115
     Saved: ~
 Window Geometry:
   Camera:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 644
+  Height: 967
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001c30000021efc0200000002fb0000000c00430061006d00650072006101000000430000021e0000001b00fffffffb000000100044006900730070006c006100790073000000011000000151000000d400ffffff0000032b0000021e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
-  Width: 1268
-  X: 1284
-  Y: 44
+  QMainWindow State: 000000ff00000000fd0000000100000000000001c300000371fc0200000002fb0000000c00430061006d006500720061010000003b000003710000001600fffffffb000000100044006900730070006c006100790073000000011000000151000000c700ffffff000003550000037100000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Width: 1310
+  X: 518
+  Y: -3

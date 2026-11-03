@@ -82,6 +82,18 @@ def generate_launch_description():
         description='Launch autonomous reactive explorer (default: true)'
     )
 
+    camera_arg = DeclareLaunchArgument(
+        'camera',
+        default_value='true',
+        description='Launch physical robot live camera bridge (default: true)'
+    )
+
+    camera_port_arg = DeclareLaunchArgument(
+        'camera_port',
+        default_value='5001',
+        description='TCP port of GStreamer camera stream on the robot (default: 5001)'
+    )
+
     # 1. Hardware Bridge Node
     bridge_node = Node(
         package='khepera4_control',
@@ -100,6 +112,52 @@ def generate_launch_description():
             'poll_rate': 25.0,
             'use_sim_time': False
         }]
+    )
+
+    # 1.b Live Camera Bridge Node (Streams video from robot:camera_port to /camera/image_raw)
+    camera_bridge_node = Node(
+        package='khepera4_control',
+        executable='khepera4_camera_bridge',
+        name='khepera4_camera_bridge',
+        output='screen',
+        parameters=[{
+            'robot_name': LaunchConfiguration('robot_name'),
+            'robot_ip': LaunchConfiguration('robot_ip'),
+            'camera_port': LaunchConfiguration('camera_port'),
+            'single_robot': True,
+            'mock': LaunchConfiguration('mock'),
+            'stream_rate': 15.0
+        }],
+        condition=IfCondition(LaunchConfiguration('camera'))
+    )
+
+    # 1.c Visual Orthomapper Node (Ground IPM & Visual Map)
+    visual_orthomapper_node = Node(
+        package='khepera4_control',
+        executable='visual_orthomapper',
+        name='visual_orthomapper',
+        output='screen',
+        parameters=[{
+            'use_sim_time': False,
+            'map_resolution': 0.03,
+            'map_width': 200,
+            'map_height': 200,
+            'map_origin_x': -3.0,
+            'map_origin_y': -3.0,
+            'map_frame': 'map',
+            'robot_frame': 'base_footprint',
+            'odom_topic': '/odom',
+            'raw_odom_topic': '/odom',
+            'image_topic': '/camera/image_raw',
+            'camera_info_topic': '/camera/camera_info',
+            'cliff_topic': '/cliff_alert',
+            'visual_map_topic': '/visual_map',
+            'visual_map_image_topic': '/visual_map/image',
+            'map_publish_rate': 3.0,
+            'alpha': 0.25,
+            'pitch_guard_deg': 6.0
+        }],
+        condition=IfCondition(LaunchConfiguration('mapper'))
     )
 
     # 2. Robot State Publisher (TF tree from URDF)
@@ -188,13 +246,17 @@ def generate_launch_description():
     return LaunchDescription([
         robot_ip_arg,
         robot_port_arg,
+        camera_port_arg,
         robot_name_arg,
         mock_arg,
         dashboard_arg,
         mapper_arg,
         rviz_arg,
         auto_explore_arg,
+        camera_arg,
         bridge_node,
+        camera_bridge_node,
+        visual_orthomapper_node,
         robot_state_pub,
         mapper_node,
         dashboard_node,

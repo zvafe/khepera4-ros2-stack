@@ -4,6 +4,9 @@ set -e
 # Cleanup stale X11 lock files from previous runs
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
 
+# Force purely X11 mode for virtual framebuffer (prevent x11vnc from detecting host WSLg Wayland)
+unset WAYLAND_DISPLAY
+
 export DISPLAY=:1
 export RESOLUTION=${RESOLUTION:-1920x1080x24}
 

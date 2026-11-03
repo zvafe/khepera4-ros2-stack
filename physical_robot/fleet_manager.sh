@@ -58,7 +58,7 @@ cmd_ping() {
 
 cmd_deploy() {
     print_header
-    echo "Deploying onboard daemon & systemd service to robots..."
+    echo "Deploying onboard daemon & camera streamer to robots..."
     local src_dir="${SCRIPT_DIR}/onboard_daemon"
 
     for entry in "${ROBOTS[@]}"; do
@@ -70,15 +70,28 @@ cmd_deploy() {
             continue
         fi
 
-        echo " 1. Copying source files..."
-        scp -o ConnectTimeout=3 -o BatchMode=no "${src_dir}/khepera4_tcp_server.c" "${src_dir}/Makefile" root@"${ip}":/home/root/
-        scp -o ConnectTimeout=3 -o BatchMode=no "${src_dir}/khepera4_server.service" root@"${ip}":/lib/systemd/system/
+        echo " 1. Copying source & streamer files..."
+        scp -o ConnectTimeout=3 -o BatchMode=no \
+            "${src_dir}/khepera4_tcp_server.c" \
+            "${src_dir}/Makefile" \
+            "${src_dir}/khepera4_camera_streamer.sh" \
+            "${src_dir}/autorun.sh" \
+            root@"${ip}":/home/root/
+        scp -o ConnectTimeout=3 -o BatchMode=no "${src_dir}/khepera4_server.service" root@"${ip}":/lib/systemd/system/ 2>/dev/null || true
 
         echo " 2. Compiling binary on robot with libkhepera..."
-        ssh -o ConnectTimeout=5 root@"${ip}" "cd /home/root && make clean && make && chmod +x khepera4_tcp_server"
+        ssh -o ConnectTimeout=5 root@"${ip}" "cd /home/root && make clean && make && chmod +x khepera4_tcp_server khepera4_camera_streamer.sh autorun.sh"
 
-        echo " 3. Enabling systemd autostart service..."
-        ssh -o ConnectTimeout=5 root@"${ip}" "systemctl daemon-reload && systemctl enable khepera4_server && systemctl restart khepera4_server"
+        echo " 3. Configuring autostart (SysVinit & Systemd compatible)..."
+        ssh -o ConnectTimeout=5 root@"${ip}" "
+            cp /home/root/autorun.sh /etc/init.d/autorun.sh 2>/dev/null && chmod +x /etc/init.d/autorun.sh || true
+            [ ! -e /etc/rc5.d/S20autorun.sh ] && ln -sf /etc/init.d/autorun.sh /etc/rc5.d/S20autorun.sh 2>/dev/null || true
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl daemon-reload && systemctl enable khepera4_server && systemctl restart khepera4_server
+            else
+                /etc/init.d/autorun.sh restart || /etc/init.d/autorun.sh start
+            fi
+        "
         echo "[SUCCESS] ${name} deployed and daemon started!"
     done
 }
@@ -89,7 +102,13 @@ cmd_start() {
     for entry in "${ROBOTS[@]}"; do
         IFS=':' read -r name role ip <<< "$entry"
         echo "Starting daemon on ${name} (${ip})..."
-        ssh -o ConnectTimeout=3 root@"${ip}" "systemctl start khepera4_server || /home/root/khepera4_tcp_server 5000 &" || true
+        ssh -o ConnectTimeout=3 root@"${ip}" "
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl start khepera4_server
+            else
+                /etc/init.d/autorun.sh start 2>/dev/null || (/home/root/khepera4_tcp_server 5000 &)
+            fi
+        " || true
     done
 }
 
@@ -99,7 +118,14 @@ cmd_stop() {
     for entry in "${ROBOTS[@]}"; do
         IFS=':' read -r name role ip <<< "$entry"
         echo "Stopping daemon on ${name} (${ip})..."
-        ssh -o ConnectTimeout=3 root@"${ip}" "systemctl stop khepera4_server; killall khepera4_tcp_server 2>/dev/null" || true
+        ssh -o ConnectTimeout=3 root@"${ip}" "
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl stop khepera4_server 2>/dev/null || true
+            fi
+            /etc/init.d/autorun.sh stop 2>/dev/null || true
+            killall khepera4_tcp_server 2>/dev/null || true
+            killall -9 gst-launch-0.10 gst-launch-1.0 2>/dev/null || true
+        " || true
     done
 }
 

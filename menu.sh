@@ -51,6 +51,12 @@ setup_environment() {
 }
 
 ask_execution_platform() {
+    # If already running inside a Docker container, execute commands directly
+    if [ -f /.dockerenv ]; then
+        ENV_CHOICE="1"
+        return 0
+    fi
+
     # If running with native ROS 2 installed, user can choose Native or Docker
     if [ -f "/opt/ros/jazzy/setup.bash" ]; then
         echo ""
@@ -232,8 +238,8 @@ menu_physical_lab() {
     echo -e "${CYAN}==================================================================${NC}"
     echo -e "${BOLD}  PHYSICAL KHEPERA IV ROBOT (Classroom Lab Wi-Fi Connection)       ${NC}"
     echo -e "${CYAN}==================================================================${NC}"
-    read -r -p "Enter Khepera Robot IP (default: 192.168.1.101): " robot_ip_input
-    ROBOT_IP="${robot_ip_input:-192.168.1.101}"
+    read -r -p "Enter Khepera Robot IP (default: ${KHEPERA_1_IP:-192.168.137.43}): " robot_ip_input
+    ROBOT_IP="${robot_ip_input:-${KHEPERA_1_IP:-192.168.137.43}}"
 
     echo ""
     echo " 1) Test Ping & Network Reachability to ${ROBOT_IP}"

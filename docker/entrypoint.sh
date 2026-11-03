@@ -17,6 +17,12 @@ if [ ! -e "/home/andy/Desktop/khepera4_ws" ]; then
     ln -s /workspace /home/andy/Desktop/khepera4_ws 2>/dev/null || true
 fi
 
+# Auto-build Khepera IV colcon workspace if not built yet
+if [ ! -f "/workspace/install/setup.bash" ] && [ -d "/workspace/src" ]; then
+    echo "[entrypoint] Building Khepera IV workspace packages..."
+    (cd /workspace && colcon build --symlink-install)
+fi
+
 # Source Khepera IV colcon workspace if built
 if [ -f "/workspace/install/setup.bash" ]; then
     source "/workspace/install/setup.bash"

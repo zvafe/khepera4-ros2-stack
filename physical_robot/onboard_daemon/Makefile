@@ -8,7 +8,7 @@ SRC = khepera4_tcp_server.c
 
 # Native compiler (default)
 CC ?= gcc
-CFLAGS ?= -O2 -Wall -DHAVE_LIBKHEPERA
+CFLAGS ?= -std=gnu99 -O2 -Wall -DHAVE_LIBKHEPERA
 LDFLAGS ?= -lkhepera -lm
 
 all: $(TARGET)
