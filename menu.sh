@@ -51,6 +51,12 @@ setup_environment() {
 }
 
 ask_execution_platform() {
+    # If already running inside a Docker container, execute commands directly
+    if [ -f /.dockerenv ]; then
+        ENV_CHOICE="1"
+        return 0
+    fi
+
     # If running with native ROS 2 installed, user can choose Native or Docker
     if [ -f "/opt/ros/jazzy/setup.bash" ]; then
         echo ""
@@ -232,8 +238,8 @@ menu_physical_lab() {
     echo -e "${CYAN}==================================================================${NC}"
     echo -e "${BOLD}  PHYSICAL KHEPERA IV ROBOT (Classroom Lab Wi-Fi Connection)       ${NC}"
     echo -e "${CYAN}==================================================================${NC}"
-    read -r -p "Enter Khepera Robot IP (default: 192.168.1.101): " robot_ip_input
-    ROBOT_IP="${robot_ip_input:-192.168.1.101}"
+    read -r -p "Enter Khepera Robot IP (default: ${KHEPERA_1_IP:-192.168.137.43}): " robot_ip_input
+    ROBOT_IP="${robot_ip_input:-${KHEPERA_1_IP:-192.168.137.43}}"
 
     echo ""
     echo " 1) Test Ping & Network Reachability to ${ROBOT_IP}"
@@ -241,9 +247,10 @@ menu_physical_lab() {
     echo " 3) Connect Single Robot: Bridge + Mapper + Dashboard + RViz2"
     echo " 4) Launch Keyboard Teleoperation (/cmd_vel)"
     echo " 5) Save Active 2D Map to maps/"
-    echo " 6) Back to Main Menu"
+    echo " 6) USB Serial Programming & Swarm Provisioner (First-time setup / Recovery)"
+    echo " 7) Back to Main Menu"
     echo ""
-    read -r -p "Select option [1-6]: " choice
+    read -r -p "Select option [1-7]: " choice
 
     case "$choice" in
         1)
@@ -268,6 +275,10 @@ menu_physical_lab() {
             read -r -p "Press [Enter] to continue..."
             ;;
         6)
+            python3 "${WS_ROOT}/physical_robot/khepera_serial_provisioner.py"
+            read -r -p "Press [Enter] to continue..."
+            ;;
+        7)
             return
             ;;
         *)

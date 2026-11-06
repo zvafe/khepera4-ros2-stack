@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     psmisc \
     ca-certificates \
+    && apt-get install --reinstall -y libllvm20 \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure noVNC root index redirect to autoconnect with remote-resize enabled

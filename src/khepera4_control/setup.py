@@ -37,6 +37,8 @@ setup(
             'khepera4_mapper = khepera4_control.khepera4_mapper:main',
             'reactive_explorer = khepera4_control.reactive_explorer:main',
             'mapping_dashboard = khepera4_control.mapping_dashboard:main',
+            'visual_orthomapper = khepera4_control.visual_orthomapper:main',
+            'khepera4_camera_bridge = khepera4_control.khepera4_camera_bridge:main',
         ],
     },
 )

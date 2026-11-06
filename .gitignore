@@ -44,8 +44,22 @@ telemetry/
 
 # Agents created by antigravity
 .agents/
+PROJECT.md
+TEST_INFRA.md
+TEST_READY.md
+GATE_STATUS.md
 
 # Native binaries & runtime artifacts
 physical_robot/onboard_daemon/khepera4_tcp_server_mock
 physical_robot/onboard_daemon/khepera4_tcp_server
+
+# Map exports, 3D point clouds & runtime camera keyframe captures
 maps/*.png
+maps/keyframes/
+maps/pointclouds/
+*.pcd
+*.ply
+
+# Test & coverage artifacts
+.coverage*
+coverage.xml
