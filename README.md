@@ -1,7 +1,7 @@
 # BRT K4: Khepera IV Autonomous Robotics & Multi-Agent Swarm Stack
 
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS_2-Jazzy_Jalisco-343434.svg?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
-[![Gazebo Harmonic](https://img.shields.io/badge/Gazebo-Harmonic_8.15-FF6F00.svg?logo=gazebo&logoColor=white)](https://gazebosim.org/)
+[![Gazebo Harmonic](https://img.shields.io/badge/Gazebo-Jazzy-FF6F00.svg?logo=gazebo&logoColor=white)](https://gazebosim.org/)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 
 
