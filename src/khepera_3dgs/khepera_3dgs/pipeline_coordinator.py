@@ -61,6 +61,7 @@ class ReconstructionPipeline:
         num_iterations: int = 2000,
         enable_floor_scale: bool = False,
         align_supersplat_y_up: bool = True,
+        max_height_m: float = 3.0,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> None:
         """
@@ -81,6 +82,7 @@ class ReconstructionPipeline:
         :param num_iterations: Training optimization steps (2,000 to 5,000).
         :param enable_floor_scale: Enable floor ROI depth scaling (default False).
         :param align_supersplat_y_up: Rotate exported PLY to WebGL/SuperSplat Y-up frame.
+        :param max_height_m: Maximum ceiling/arena height in meters (default 3.0m).
         :param device: Execution device ('cuda' or 'cpu').
         """
         self.output_dir = os.path.abspath(output_dir)
@@ -90,6 +92,7 @@ class ReconstructionPipeline:
         self.num_iterations = int(num_iterations)
         self.voxel_size = float(voxel_size_m)
         self.align_supersplat_y_up = bool(align_supersplat_y_up)
+        self.max_height = float(max_height_m)
         self.width = int(width)
         self.height = int(height)
 
@@ -192,7 +195,13 @@ class ReconstructionPipeline:
             viewmats_list.append(viewmatrix_ros)
 
             pts_w, cols = self.lifter.unproject_depth_map(
-                depth, img, t_world_cam_ros, d_min=0.08, d_max=3.50, subsample_step=2
+                depth,
+                img,
+                t_world_cam_ros,
+                d_min=0.08,
+                d_max=6.00 if self.max_height > 1.0 else 3.50,
+                max_z=self.max_height,
+                subsample_step=2,
             )
             if len(pts_w) > 0:
                 all_pts.append(pts_w)
@@ -230,6 +239,7 @@ class ReconstructionPipeline:
             densify_grad_thresh=0.0002,
             prune_opacity_thresh=0.08,
             w_depth=1.0,
+            max_z=self.max_height,
         )
 
         # Prepare PyTorch training tensors

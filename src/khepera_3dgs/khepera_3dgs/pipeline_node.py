@@ -41,6 +41,7 @@ class Khepera3DGSNode(Node):
         self.declare_parameter("train_on_shutdown", True)
         self.declare_parameter("enable_floor_scale", False)
         self.declare_parameter("align_supersplat_y_up", True)
+        self.declare_parameter("max_height_m", 3.0)
 
         self.output_dir = str(self.get_parameter("output_dir").value)
         self.cam_h = float(self.get_parameter("camera_height_m").value)
@@ -59,6 +60,7 @@ class Khepera3DGSNode(Node):
         self.train_on_shutdown = bool(self.get_parameter("train_on_shutdown").value)
         self.enable_floor_scale = bool(self.get_parameter("enable_floor_scale").value)
         self.align_supersplat_y_up = bool(self.get_parameter("align_supersplat_y_up").value)
+        self.max_height = float(self.get_parameter("max_height_m").value)
 
         # Core pipeline components
         self.decimator = SpatialDecimator(
@@ -76,6 +78,7 @@ class Khepera3DGSNode(Node):
             num_iterations=self.num_iters,
             enable_floor_scale=self.enable_floor_scale,
             align_supersplat_y_up=self.align_supersplat_y_up,
+            max_height_m=self.max_height,
         )
 
         # TF listener for robot map pose

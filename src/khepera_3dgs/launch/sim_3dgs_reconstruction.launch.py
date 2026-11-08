@@ -81,6 +81,7 @@ def generate_launch_description() -> LaunchDescription:
                 "output_dir": LaunchConfiguration("output_dir"),
                 "num_iterations": LaunchConfiguration("iterations"),
                 "train_on_shutdown": LaunchConfiguration("train_on_shutdown"),
+                "max_height_m": 0.40,
             },
         ],
     )

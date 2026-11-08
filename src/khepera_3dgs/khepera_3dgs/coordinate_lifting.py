@@ -163,7 +163,7 @@ class CoordinateLifter:
         d_max: float = 3.50,
         subsample_step: int = 1,
         min_z: float = -0.02,
-        max_z: float = 0.40,
+        max_z: float = 3.00,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Back-project calibrated depth pixels to 3D world coordinates with bounds filtering.

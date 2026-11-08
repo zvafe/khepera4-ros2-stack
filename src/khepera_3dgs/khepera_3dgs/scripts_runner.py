@@ -128,16 +128,21 @@ def main_cli() -> None:
         help="Run verification test on synthetic multi-view trajectory",
     )
     parser.add_argument(
-        "--num-keyframes", type=int, default=24, help="Number of keyframes for synthetic test"
+        "--max-height",
+        type=float,
+        default=3.0,
+        help="Maximum ceiling height filter in meters (default 3.0m, set to 0.40m for Gazebo sim)",
     )
 
     args = parser.parse_args()
 
+    max_h = 0.40 if args.synthetic_test else args.max_height
     pipeline = ReconstructionPipeline(
         output_dir=args.output_dir,
         checkpoint_path=args.checkpoint if args.checkpoint else None,
         voxel_size_m=args.voxel_size,
         num_iterations=args.iterations,
+        max_height_m=max_h,
     )
 
     if args.bag:

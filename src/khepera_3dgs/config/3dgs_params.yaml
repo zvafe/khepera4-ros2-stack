@@ -17,3 +17,5 @@ khepera_3dgs_node:
     train_on_shutdown: true
     enable_floor_scale: false
     align_supersplat_y_up: true
+    max_height_m: 3.0
+

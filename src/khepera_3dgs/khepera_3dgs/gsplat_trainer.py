@@ -193,6 +193,8 @@ class GsplatTrainer:
         w_depth: float = 1.0,
         densify_grad_thresh: float = 0.0002,
         prune_opacity_thresh: float = 0.08,
+        min_z: float = -0.02,
+        max_z: float = 3.00,
     ) -> None:
         """
         Initialize trainer and parameter optimizers.
@@ -207,6 +209,8 @@ class GsplatTrainer:
         :param w_depth: Weight for dense depth loss (SplaTAM standard 1.0).
         :param densify_grad_thresh: Viewspace gradient threshold for cloning/splitting.
         :param prune_opacity_thresh: Opacity threshold below which Gaussians are pruned.
+        :param min_z: Minimum allowable map Z coordinate (subterranean floor filter).
+        :param max_z: Maximum allowable map Z coordinate (ceiling height filter).
         """
         self.model = gaussian_model
         self.device = gaussian_model.device
@@ -214,6 +218,8 @@ class GsplatTrainer:
         self.w_depth = float(w_depth)
         self.grad_thresh = float(densify_grad_thresh)
         self.prune_thresh = float(prune_opacity_thresh)
+        self.min_z = float(min_z)
+        self.max_z = float(max_z)
 
         # Gradient accumulator for adaptive density control
         self._grad_accum = torch.zeros(self.model.num_gaussians, device=self.device)
@@ -297,11 +303,11 @@ class GsplatTrainer:
                 & (target_depth <= 3.50)
                 & torch.isfinite(target_depth)
             )
-            # Mask out open sky rays pointing above arena walls (z_world > 0.40m)
+            # Mask out rays pointing above ceiling bounds (z_world > max_z)
             v_rows = torch.arange(height, device=self.device).view(1, height, 1)
             cy = k_mat[0, 1, 2]
             fy = k_mat[0, 1, 1]
-            sky_thresh = ((0.40 - 0.0283) * fy) / torch.clamp(cy - v_rows, min=1.0)
+            sky_thresh = ((self.max_z - 0.0283) * fy) / torch.clamp(cy - v_rows, min=1.0)
             sky_mask = (v_rows < cy) & (target_depth > sky_thresh)
             valid_mask = valid_mask & (~sky_mask)
 
@@ -332,19 +338,21 @@ class GsplatTrainer:
         self,
         prune_opacity_thresh: Optional[float] = None,
         max_scale_thresh: float = 0.12,
-        min_z: float = -0.02,
-        max_z: float = 0.40,
+        min_z: Optional[float] = None,
+        max_z: Optional[float] = None,
     ) -> int:
         """
-        Prune Gaussians with low opacity, excessive scale, or outside arena height bounds.
+        Prune Gaussians with low opacity, excessive scale, or outside vertical bounds.
 
         :param prune_opacity_thresh: Custom opacity cutoff (default self.prune_thresh).
         :param max_scale_thresh: Max allowable scale dimension in meters.
-        :param min_z: Minimum allowable map Z coordinate (subterranean floor filter).
-        :param max_z: Maximum allowable map Z coordinate (sky/ceiling filter).
+        :param min_z: Minimum allowable map Z coordinate (default self.min_z).
+        :param max_z: Maximum allowable map Z coordinate (default self.max_z).
         :return: Number of pruned Gaussians.
         """
         thresh = float(prune_opacity_thresh) if prune_opacity_thresh else self.prune_thresh
+        z_min = float(min_z) if min_z is not None else self.min_z
+        z_max = float(max_z) if max_z is not None else self.max_z
         with torch.no_grad():
             cur_opacities = torch.sigmoid(self.model.opacities)
             cur_scales = torch.exp(self.model.scales)
@@ -354,8 +362,8 @@ class GsplatTrainer:
             keep_mask = (
                 (cur_opacities >= thresh)
                 & (max_scale <= max_scale_thresh)
-                & (z_pos >= min_z)
-                & (z_pos <= max_z)
+                & (z_pos >= z_min)
+                & (z_pos <= z_max)
             )
             n_pruned = int((~keep_mask).sum().item())
 
