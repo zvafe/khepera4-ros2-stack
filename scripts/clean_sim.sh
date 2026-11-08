@@ -22,6 +22,7 @@ safe_kill() {
 
 # 1. Kill specific simulation processes
 safe_kill "gz sim"
+safe_kill "gz-sim"
 safe_kill "ros_gz"
 safe_kill "parameter_bridge"
 safe_kill "robot_state_publisher"
@@ -33,7 +34,12 @@ safe_kill "open_loop_benchmark"
 safe_kill "teleop_twist_keyboard"
 safe_kill "khepera4_hardware_bridge"
 safe_kill "khepera4_mapper"
+safe_kill "visual_orthomapper"
 safe_kill "swarm_coordinator"
+safe_kill "frontier_manager_node"
+safe_kill "semantic_reasoner_node"
+safe_kill "gaussian_mapper_node"
+safe_kill "hybrid_coordinator_node"
 
 # 2. Stop any running Docker simulation containers
 if command -v docker >/dev/null 2>&1 && [ -f "${WS_ROOT}/docker/docker-compose.yml" ]; then

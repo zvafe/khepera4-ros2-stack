@@ -1,0 +1,36 @@
+# Khepera IV Frontier Exploration (explore_lite) Configuration
+# Optimized for small footprint Khepera IV (140mm diameter) and Nav2 global costmap.
+
+explore_node:
+  ros__parameters:
+    use_sim_time: true
+    robot_base_frame: base_footprint
+    costmap_topic: /global_costmap/costmap
+    costmap_updates_topic: /global_costmap/costmap_updates
+    visualize: true
+    planner_frequency: 0.5          # 2.0-second frontier evaluation period (suitable for 0.15 m/s speed)
+    progress_timeout: 25.0          # Abandon goal if unprogressed for 25s
+    potential_scale: 1.0            # Penalty weight for travel distance to frontier
+    orientation_scale: 0.0          # Orientation agnostic
+    gain_scale: 2.5                 # Reward weight for frontier information gain (size)
+    transform_tolerance: 1.0
+    min_frontier_size: 0.15         # Minimum 8 contiguous cells (0.02m resolution = 0.16m, > robot width)
+    return_to_init: false           # Stay at final explored location or allow arbiter to direct
+
+    # =========================================================================
+    # OPEN HOOK: Vision-Language Model (VLM) Target Seeking Parameters
+    # When enabled by an OpenFrontier or SplatSearch extension node / arbiter:
+    #
+    # 1. OpenFrontier (Zero-Shot Text-Conditioned Seeking):
+    #    - vlm_semantic_weight: Blends semantic goal likelihood into frontier rank:
+    #        Utility(F_i) = gain_scale * Gain(F_i)
+    #                     + vlm_semantic_weight * P(target|F_i)
+    #                     - potential_scale * Cost(F_i)
+    #
+    # 2. SplatSearch (Single-Shot Visual Exemplar Navigation):
+    #    - exemplar_override_threshold: Minimum visual similarity / 3D Gaussian
+    #      confidence threshold required to preempt geometric frontier exploration
+    #      and force direct target pursuit.
+    # =========================================================================
+    vlm_semantic_weight: 2.0
+    exemplar_override_threshold: 0.72

@@ -62,8 +62,9 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from sensor_msgs.msg import Image as RosImage, Imu, LaserScan
-from std_msgs.msg import Bool
+from sensor_msgs.msg import Image as RosImage, Imu, LaserScan, PointCloud2
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Bool, Header
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -139,6 +140,8 @@ class Khepera4Mapper(Node):
         self.declare_parameter('map_origin_y', -3.0)        # Grid origin Y (m)
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('publish_map_tf', True)
+        self.declare_parameter('publish_odom_tf', False)
+        self.declare_parameter('draw_keyframe_labels', False)
         self.declare_parameter('robot_frame', 'base_footprint')
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('imu_topic', '/imu/data')
@@ -193,6 +196,10 @@ class Khepera4Mapper(Node):
         self.origin_y = float(self.get_parameter('map_origin_y').value)
         self.map_frame = self.get_parameter('map_frame').value
         self.publish_map_tf = bool(self.get_parameter('publish_map_tf').value)
+        self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
+        self.draw_keyframe_labels = bool(
+            self.get_parameter('draw_keyframe_labels').value
+        )
         self.robot_frame = self.get_parameter('robot_frame').value
         self.l_free = float(self.get_parameter('log_odds_free').value)
         self.l_occ = float(self.get_parameter('log_odds_occ').value)
@@ -262,6 +269,7 @@ class Khepera4Mapper(Node):
         self.robot_x = 0.0
         self.robot_y = 0.0
         self.robot_yaw = 0.0
+        self.robot_pitch = 0.0
         self.has_odom = False
         self.has_imu = False
         self.imu_yaw = 0.0
@@ -332,7 +340,18 @@ class Khepera4Mapper(Node):
 
         # d) Surface & Cliff Hazard Map (Latched)
         self.surface_pub = self.create_publisher(OccupancyGrid, '/surface_map', qos_latched)
+
+        # ======================================================================
+        # CLIFF DETECTION TOPIC: /cliff_alert (std_msgs/msg/Bool)
+        # ======================================================================
+        # Broadcasts True immediately when any downward-facing ground IR sensor
+        # detects an abrupt drop-off / cliff edge (range > cliff_thresh or inf).
+        # Used by explore_adapter, dashboard, and safety monitors for emergency backup.
+        # ======================================================================
         self.cliff_alert_pub = self.create_publisher(Bool, '/cliff_alert', 10)
+        self.cliff_cloud_pub = self.create_publisher(
+            PointCloud2, '/khepera4/cliff_cloud', qos_reliable
+        )
         self.turned_over_pub = self.create_publisher(Bool, '/khepera4/turned_over', 10)
 
         # e) Fused Odometry with Tangential Slip Projection & Perimeter Clamping
@@ -583,6 +602,20 @@ class Khepera4Mapper(Node):
             fused.twist.covariance = twist_cov
 
         self.fused_odom_pub.publish(fused)
+
+        if self.publish_odom_tf:
+            t_odom = TransformStamped()
+            t_odom.header.stamp = stamp
+            t_odom.header.frame_id = 'odom'
+            t_odom.child_frame_id = self.robot_frame
+            t_odom.transform.translation.x = float(self.robot_x)
+            t_odom.transform.translation.y = float(self.robot_y)
+            t_odom.transform.translation.z = 0.0
+            t_odom.transform.rotation.x = qx
+            t_odom.transform.rotation.y = qy
+            t_odom.transform.rotation.z = qz
+            t_odom.transform.rotation.w = qw
+            self.tf_broadcaster.sendTransform(t_odom)
 
         self._broadcast_map_tf(stamp)
 
@@ -971,6 +1004,7 @@ class Khepera4Mapper(Node):
             sin_p = 2.0 * (q.w * q.y - q.z * q.x)
             sin_p = max(-1.0, min(1.0, sin_p))
             q_pitch = math.asin(sin_p)
+            self.robot_pitch = q_pitch
             ax_dynamic = ax + 9.80665 * math.sin(q_pitch)
         else:
             ax_dynamic = ax
@@ -1011,27 +1045,61 @@ class Khepera4Mapper(Node):
         """Monitor ground IR scan for cliff drop-off and terrain roughness."""
         self.latest_ground_ir[index] = msg
 
+        # ======================================================================
+        # CLIFF DETECTION TOPIC: /cliff_alert (std_msgs/msg/Bool)
+        # ======================================================================
+        # Easy Retrieval Hook: Publishes std_msgs/msg/Bool on '/cliff_alert'.
+        # Triggers when downward-facing ground IR sensors detect an edge/drop-off
+        # (dist > cliff_thresh or dist is inf).
+        # Stamping: Constructs a thin 1-cell barrier along the exact rim of the
+        # platform edge to block costmap traversal without contaminating the floor.
+        # ======================================================================
         any_cliff = False
+        cliff_points = []
+        is_upright = abs(self.robot_pitch) < 0.12  # Guard: do not stamp if robot pitched/fallen
+
         for k in range(4):
             scan = self.latest_ground_ir[k]
             if scan is not None and len(scan.ranges) > 0:
                 dist = scan.ranges[0]
                 if math.isinf(dist) or math.isnan(dist) or dist > self.cliff_thresh:
                     any_cliff = True
-                    if self.has_odom:
-                        gx, gy = GROUND_IR_MOUNTS[k]
+                    gx, gy = GROUND_IR_MOUNTS[k]
+                    cliff_points.append((float(gx), float(gy), 0.0))
+                    if self.has_odom and is_upright:
                         wx = (self.robot_x + gx * math.cos(self.robot_yaw) -
                               gy * math.sin(self.robot_yaw))
                         wy = (self.robot_y + gx * math.sin(self.robot_yaw) +
                               gy * math.cos(self.robot_yaw))
-                        c, r = self.world_to_grid(wx, wy)
-                        if self.is_valid_cell(c, r):
-                            self.surface_grid[r, c] = 100
+                        # Stamp a crisp 1-cell thin barrier tangent to the edge
+                        tangent_x = -math.sin(self.robot_yaw)
+                        tangent_y = math.cos(self.robot_yaw)
+                        for s in np.linspace(-0.06, 0.06, 9):
+                            px = wx + float(s) * tangent_x
+                            py = wy + float(s) * tangent_y
+                            c, r = self.world_to_grid(px, py)
+                            if self.is_valid_cell(c, r):
+                                self.surface_grid[r, c] = 100
+                                self.log_odds[r, c] = self.l_max
+                                self.hit_count[r, c] = 255
 
         self.cliff_detected = any_cliff
         alert_msg = Bool()
         alert_msg.data = any_cliff
         self.cliff_alert_pub.publish(alert_msg)
+
+        # Always publish cliff_cloud (empty when no cliff) so collision_monitor
+        # source_timeout never starves or halts valid motion
+        header = Header()
+        header.stamp = msg.header.stamp
+        header.frame_id = self.robot_frame
+        cloud_msg = point_cloud2.create_cloud_xyz32(header, cliff_points)
+        self.cliff_cloud_pub.publish(cloud_msg)
+
+        if cliff_points:
+            # Immediately broadcast updated map to Nav2 with newly stamped cliff obstacle
+            now_stamp = self.get_clock().now().to_msg()
+            self._publish_grid(self.map_pub, self._build_occupancy_grid_data(), now_stamp)
 
     # ==========================================================================
     # Coordinate Transformations & Grid Helpers
@@ -1058,62 +1126,62 @@ class Khepera4Mapper(Node):
     # ==========================================================================
 
     def publish_virtual_scan(self):
-        """Combine 8 IR and 5 US scans into a unified 360-sample 2D scan on base_footprint."""
+        """
+        Combine 8 IR and 5 US scans into a unified 360-sample 2D scan on base_footprint.
+
+        Uses nan for blind spot angles to prevent ray-clearing through unseen walls.
+        Models physical acoustic and optical beam dispersion cones for stable scan matching.
+        """
         num_samples = 360
         angle_min = -math.pi
         angle_max = math.pi - (2.0 * math.pi / num_samples)
         angle_inc = 2.0 * math.pi / num_samples
 
-        ranges = [float('inf')] * num_samples
+        # Initialize blind spots to 0.0 (< range_min): unobserved angles are discarded
+        # by Nav2 costmaps and safely ignored by SLAM Toolbox without NaN pointer exceptions
+        ranges = [0.0] * num_samples
         now = self.get_clock().now().to_msg()
 
-        # 1. Process 8 Infrared Proximity Sensors (0.002m - 0.25m close range)
+        # 1. Process 8 Infrared Proximity Sensors (0.002m - 0.25m, 10 deg optical cone)
+        ir_cone_offsets = [-0.087, -0.044, 0.0, 0.044, 0.087]
         for i, mount in enumerate(IR_MOUNTS):
             scan = self.latest_ir[i]
-            if scan is None:
+            if scan is None or not scan.ranges:
                 continue
             sx, sy, syaw = mount
-            for j, r in enumerate(scan.ranges):
-                if math.isnan(r) or math.isinf(r) or r < scan.range_min or r > scan.range_max:
-                    continue
-                ray_angle = scan.angle_min + j * scan.angle_increment
-                px = sx + r * math.cos(syaw + ray_angle)
-                py = sy + r * math.sin(syaw + ray_angle)
-                dist = math.hypot(px, py)
-                angle = math.atan2(py, px)
-
-                idx = int(round((angle - angle_min) / angle_inc)) % num_samples
-                if dist < ranges[idx]:
-                    ranges[idx] = dist
+            r = scan.ranges[0]
+            if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
+                for dth in ir_cone_offsets:
+                    ray_angle = syaw + dth
+                    px = sx + r * math.cos(ray_angle)
+                    py = sy + r * math.sin(ray_angle)
+                    dist = math.hypot(px, py)
+                    angle = math.atan2(py, px)
+                    idx = int(round((angle - angle_min) / angle_inc)) % num_samples
+                    if ranges[idx] == 0.0 or dist < ranges[idx]:
+                        ranges[idx] = dist
 
         # Find minimum detected obstacle distance from IR sensors in robot frame
-        min_ir_dist = min([r for r in ranges if not math.isinf(r)], default=2.0)
+        valid_ir_hits = [r for r in ranges if r > 0.0]
+        min_ir_dist = min(valid_ir_hits, default=2.0)
 
-        # 2. Process 5 Ultrasonic Sensors (0.02m - 2.0m medium range)
+        # 2. Process 5 Ultrasonic Sensors (0.20m - 2.0m, 20 deg acoustic cone)
+        us_cone_offsets = [-0.174, -0.131, -0.087, -0.044, 0.0, 0.044, 0.087, 0.131, 0.174]
         for i, mount in enumerate(US_MOUNTS):
             scan = self.latest_us[i]
-            if scan is None:
+            if scan is None or not scan.ranges:
                 continue
             sx, sy, syaw = mount
-            for j, r in enumerate(scan.ranges):
-                if math.isnan(r) or math.isinf(r) or r < scan.range_min or r > scan.range_max:
-                    continue
-                ray_angle = scan.angle_min + j * scan.angle_increment
-                px = sx + r * math.cos(syaw + ray_angle)
-                py = sy + r * math.sin(syaw + ray_angle)
-                dist = math.hypot(px, py)
-                angle = math.atan2(py, px)
-
-                idx = int(round((angle - angle_min) / angle_inc)) % num_samples
-
+            r = scan.ranges[0]
+            if not math.isnan(r) and not math.isinf(r) and scan.range_min <= r <= scan.range_max:
                 # Reject ultrasonic hits penetrating obstacles detected at close range by IR
-                if min_ir_dist < 0.15 and dist > (min_ir_dist + 0.15):
+                if min_ir_dist < 0.15 and r > (min_ir_dist + 0.15):
                     continue
 
                 # Verify hit does not lie outside physical arena bounds
                 if self.has_odom:
-                    hit_wx = self.robot_x + dist * math.cos(self.robot_yaw + angle)
-                    hit_wy = self.robot_y + dist * math.sin(self.robot_yaw + angle)
+                    hit_wx = self.robot_x + r * math.cos(self.robot_yaw + syaw)
+                    hit_wy = self.robot_y + r * math.sin(self.robot_yaw + syaw)
                     out_x = (
                         hit_wx < (self.arena_min_x - 0.05) or
                         hit_wx > (self.arena_max_x + 0.05)
@@ -1125,8 +1193,16 @@ class Khepera4Mapper(Node):
                     if out_x or out_y:
                         continue
 
-                if dist < ranges[idx]:
-                    ranges[idx] = dist
+                # Fan 9 acoustic cone rays across 20 degree beam width
+                for dth in us_cone_offsets:
+                    ray_angle = syaw + dth
+                    px = sx + r * math.cos(ray_angle)
+                    py = sy + r * math.sin(ray_angle)
+                    dist = math.hypot(px, py)
+                    angle = math.atan2(py, px)
+                    idx = int(round((angle - angle_min) / angle_inc)) % num_samples
+                    if ranges[idx] == 0.0 or dist < ranges[idx]:
+                        ranges[idx] = dist
 
         scan_msg = LaserScan()
         scan_msg.header.stamp = now
@@ -1136,8 +1212,8 @@ class Khepera4Mapper(Node):
         scan_msg.angle_increment = angle_inc
         scan_msg.time_increment = 0.0
         scan_msg.scan_time = 1.0 / float(self.get_parameter('scan_publish_rate').value)
-        scan_msg.range_min = 0.002
-        scan_msg.range_max = 2.0
+        scan_msg.range_min = 0.05
+        scan_msg.range_max = 3.5
         scan_msg.ranges = ranges
 
         self.scan_pub.publish(scan_msg)
@@ -1398,6 +1474,10 @@ class Khepera4Mapper(Node):
                             self.hit_count[row, col] = min(255, int(self.hit_count[row, col]) + 1)
                         break
 
+                    # If this cell is a confirmed cliff drop-off, do NOT erode it!
+                    if self.surface_grid[row, col] == 100:
+                        break
+
                     # Check if cell was previously believed to be occupied
                     if self.log_odds[row, col] >= self.l_occ:
                         # Erode the cell with incoming free space observation
@@ -1479,6 +1559,10 @@ class Khepera4Mapper(Node):
                             self.hit_count[row, col] = min(255, int(self.hit_count[row, col]) + 1)
                         break
 
+                    # If this cell is a confirmed cliff drop-off hazard, do NOT erode it!
+                    if self.surface_grid[row, col] == 100:
+                        break
+
                     # Check if cell was previously believed to be occupied
                     if self.log_odds[row, col] >= self.l_occ:
                         # Erode the cell with incoming free space observation
@@ -1527,16 +1611,18 @@ class Khepera4Mapper(Node):
                             self.surface_grid[r, c] = roughness_val
                         if can_carve and dist_sq <= carve_radius_sq:
                             # Erase any phantom / ghost wall that the robot physically traverses
-                            if self.log_odds[r, c] > -self.l_free:
-                                self.log_odds[r, c] = -self.l_free
-                            self.hit_count[r, c] = 0
-                            self.surface_grid[r, c] = roughness_val
+                            # (Never carve confirmed cliff drop-off cells!)
+                            if self.surface_grid[r, c] != 100:
+                                if self.log_odds[r, c] > -self.l_free:
+                                    self.log_odds[r, c] = -self.l_free
+                                self.hit_count[r, c] = 0
 
     def _build_occupancy_grid_data(self) -> List[int]:
         """Convert log-odds belief matrix into ROS occupancy grid standard values."""
         grid_data = np.full((self.height, self.width), -1, dtype=np.int8)
         grid_data[self.log_odds > 0.5] = 100   # Occupied
-        grid_data[self.log_odds < -0.4] = 0    # Free
+        grid_data[self.surface_grid == 100] = 100  # Confirmed cliff drop-offs are lethal obstacles
+        grid_data[(self.log_odds < -0.4) & (self.surface_grid != 100)] = 0    # Free
         return grid_data.flatten().tolist()
 
     def _publish_grid(self, publisher, data: List[int], stamp):
@@ -1690,7 +1776,8 @@ class Khepera4Mapper(Node):
                 origin_y=self.origin_y,
                 current_pose=(
                     (self.robot_x, self.robot_y, self.robot_yaw) if self.has_odom else None
-                )
+                ),
+                draw_labels=self.draw_keyframe_labels
             )
 
             self.get_logger().info(f'Successfully saved persistent map files to {save_dir}/')

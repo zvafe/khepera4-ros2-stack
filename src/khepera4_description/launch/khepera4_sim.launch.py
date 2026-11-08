@@ -3,7 +3,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess, DeclareLaunchArgument, SetEnvironmentVariable, Shutdown
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 def generate_launch_description():
@@ -34,6 +34,12 @@ def generate_launch_description():
         'headless',
         default_value='false',
         description='Run Gazebo in headless mode (server only)'
+    )
+
+    bridge_tf_arg = DeclareLaunchArgument(
+        'bridge_tf',
+        default_value='true',
+        description='Bridge Gazebo /tf to ROS /tf (set to false when using IMU-fused odom TF)'
     )
 
     # 1. Gazebo Harmonic Simulation World (GUI vs Headless)
@@ -69,6 +75,7 @@ def generate_launch_description():
         executable='create',
         output='screen',
         arguments=[
+            '-world', 'khepera4_world',
             '-name', 'khepera4',
             '-topic', 'robot_description',
             '-x', '0.0',
@@ -85,8 +92,16 @@ def generate_launch_description():
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
             '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
             '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-            '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
+            PythonExpression([
+                "'/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V' if '",
+                LaunchConfiguration('bridge_tf'),
+                "' == 'true' else '/khepera4/gz_tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V'"
+            ]),
             '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
+            '/camera/image_raw/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/image_raw/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            '/camera/image_raw/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU',
@@ -111,6 +126,12 @@ def generate_launch_description():
             '/khepera4/ground_ir_2/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/khepera4/ground_ir_3/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan'
         ],
+        remappings=[
+            ('/camera/image_raw/image', '/camera/image_raw'),
+            ('/camera/image_raw/depth_image', '/camera/depth'),
+            ('/camera/image_raw/points', '/khepera4/pointcloud3d'),
+            ('/camera/image_raw/camera_info', '/camera/camera_info'),
+        ],
         output='screen'
     )
 
@@ -118,6 +139,7 @@ def generate_launch_description():
         set_gz_resource_path,
         world_arg,
         headless_arg,
+        bridge_tf_arg,
         start_gazebo_gui,
         start_gazebo_headless,
         robot_state_publisher_node,

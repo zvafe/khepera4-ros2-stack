@@ -39,6 +39,7 @@ setup(
             'mapping_dashboard = khepera4_control.mapping_dashboard:main',
             'visual_orthomapper = khepera4_control.visual_orthomapper:main',
             'khepera4_camera_bridge = khepera4_control.khepera4_camera_bridge:main',
+            'explore_adapter = khepera4_control.explore_adapter:main',
         ],
     },
 )

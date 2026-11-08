@@ -23,6 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-xacro \
     ros-jazzy-rviz2 \
     ros-jazzy-teleop-twist-keyboard \
+    ros-jazzy-slam-toolbox \
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup \
+    ros-jazzy-nav2-costmap-2d \
     # Python dependencies for control station & telemetry
     python3-colcon-common-extensions \
     python3-pip \

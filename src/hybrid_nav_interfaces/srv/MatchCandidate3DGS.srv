@@ -1,0 +1,9 @@
+# Service for ActiveSplat viewpoint synthesis & LoFTR matching
+uint32 candidate_id
+geometry_msgs/Point centroid_3d
+sensor_msgs/Image goal_image
+---
+bool success
+float32 best_match_score
+uint32 num_correspondences
+string details

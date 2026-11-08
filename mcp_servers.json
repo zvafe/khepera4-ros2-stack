@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "ros-mcp-server": {
+      "command": "/home/andy/.local/bin/uvx",
+      "args": ["--with", "mcp<2", "ros-mcp", "--transport=stdio"],
+      "description": "ROS MCP Server - bidirectional connection to ROS via rosbridge"
+    },
+    "project-context": {
+      "command": "python3",
+      "args": ["src/tools/context_provider.py"],
+      "description": "ROS 2 Graph Context Provider"
+    },
+    "ros2-docs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/opt/ros/jazzy/share"],
+      "description": "Local ROS 2 Jazzy share & doc filesystem"
+    }
+  }
+}

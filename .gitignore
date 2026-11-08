@@ -44,6 +44,8 @@ telemetry/
 
 # Agents created by antigravity
 .agents/
+.agent
+ros-mcp-server/
 PROJECT.md
 TEST_INFRA.md
 TEST_READY.md

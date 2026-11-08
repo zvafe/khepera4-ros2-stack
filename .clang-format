@@ -1,0 +1,8 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+AccessModifierOffset: -2
+AlignAfterOpenBracket: AlwaysBreak
+ColumnLimit: 100
+IndentWidth: 2
+...

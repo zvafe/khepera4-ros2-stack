@@ -1,0 +1,18 @@
+[submodule "src/m-explore-ros2"]
+	path = src/m-explore-ros2
+	url = https://github.com/robo-friends/m-explore-ros2.git
+[submodule "third_party/ActiveSplat"]
+	path = third_party/ActiveSplat
+	url = https://github.com/Li-Yuetao/ActiveSplat.git
+[submodule "third_party/EfficientLoFTR"]
+	path = third_party/EfficientLoFTR
+	url = https://github.com/zju3dv/EfficientLoFTR.git
+[submodule "third_party/OpenFrontier"]
+	path = third_party/OpenFrontier
+	url = https://github.com/cvg/OpenFrontier.git
+[submodule "src/RVizSplat"]
+	path = src/RVizSplat
+	url = https://github.com/splat-ros/RVizSplat.git
+[submodule "src/splat_interfaces"]
+	path = src/splat_interfaces
+	url = https://github.com/splat-ros/splat_interfaces.git

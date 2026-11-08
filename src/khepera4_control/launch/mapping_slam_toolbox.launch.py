@@ -187,15 +187,17 @@ def generate_launch_description():
     )
 
     # 3. SLAM Toolbox Node (async 2D pose-graph SLAM from /khepera4/scan)
-    slam_toolbox_node = Node(
-        package='slam_toolbox',
-        executable='async_slam_toolbox_node',
-        name='slam_toolbox',
-        output='screen',
-        parameters=[
-            LaunchConfiguration('slam_params_file'),
-            {'use_sim_time': effective_use_sim_time}
-        ]
+    slam_launch_path = os.path.join(
+        get_package_share_directory('slam_toolbox'), 'launch', 'online_async_launch.py'
+    )
+    slam_toolbox_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(slam_launch_path),
+        launch_arguments={
+            'use_sim_time': effective_use_sim_time,
+            'slam_params_file': LaunchConfiguration('slam_params_file'),
+            'autostart': 'true',
+            'use_lifecycle_manager': 'false',
+        }.items()
     )
 
     # 4. Autonomous Reactive Explorer (Conditional)
@@ -255,7 +257,7 @@ def generate_launch_description():
         robot_state_pub_node,
         hardware_bridge_node,
         mapper_node,
-        slam_toolbox_node,
+        slam_toolbox_launch,
         explorer_node,
         dashboard_node,
         rviz_node

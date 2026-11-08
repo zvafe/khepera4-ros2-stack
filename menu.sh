@@ -39,7 +39,7 @@ setup_environment() {
         # shellcheck disable=SC1091
         source /opt/ros/jazzy/setup.bash
         cd "${WS_ROOT}"
-        colcon build --symlink-install --packages-select khepera4_description khepera4_control
+        colcon build --symlink-install --packages-select khepera4_description khepera4_control hybrid_nav_interfaces openfrontier_ros semantic_reasoner activesplat_ros khepera_hybrid_nav
         # shellcheck disable=SC1091
         source "${WS_ROOT}/install/setup.bash"
         echo -e "${GREEN}✓ Workspace built and sourced successfully.${NC}"
@@ -95,6 +95,8 @@ dispatch_ros2_cmd() {
             source "${WS_ROOT}/install/setup.bash"
         fi
         export GZ_SIM_RESOURCE_PATH="${WS_ROOT}/src/khepera4_description:${WS_ROOT}/install/khepera4_description/share:${GZ_SIM_RESOURCE_PATH}"
+        export QT_QPA_PLATFORM=xcb
+        export QT_XCB_GL_INTEGRATION=glx
         eval "${cmd}"
     elif [ "${ENV_CHOICE}" = "2" ]; then
         "${WS_ROOT}/run.sh" --native ${cmd}
@@ -120,9 +122,11 @@ menu_single_robot() {
     echo " 5) Closed-Loop Position Control: Waypoint Sequence"
     echo " 6) Kinematic Step-Response Benchmark (Forward 1m maneuver)"
     echo " 7) Pure 3D Gazebo Simulation Baseline (Default World)"
-    echo " 8) Back to Main Menu"
+    echo " 8) explore_lite Autonomous Frontier Exploration (Nav2 + SLAM Toolbox)"
+    echo " 9) Hybrid OpenFrontier + SplatSearch (VLM Grounded Frontiers + 3DGS)"
+    echo " 10) Back to Main Menu"
     echo ""
-    read -r -p "Select option [1-8]: " choice
+    read -r -p "Select option [1-10]: " choice
 
     case "$choice" in
         1)
@@ -154,6 +158,30 @@ menu_single_robot() {
             dispatch_ros2_cmd "ros2 launch khepera4_description khepera4_sim.launch.py"
             ;;
         8)
+            ask_execution_platform
+            dispatch_ros2_cmd "ros2 launch khepera4_control mapping_explore_lite.launch.py dashboard:=true rviz:=true"
+            ;;
+        9)
+            echo ""
+            echo -e "${BOLD}Hybrid Navigation Configuration:${NC}"
+            read -r -p "Target prompt [default: fire extinguisher]: " target_input
+            TARGET_PROMPT="${target_input:-fire extinguisher}"
+            read -r -p "Enable 3D Gaussian Splatting (true/false) [default: false]: " tgs_input
+            ENABLE_3DGS="${tgs_input:-false}"
+            echo "Select VLM Backend:"
+            echo " 1) Local Ollama (gemma4:e2b / qwen2.5vl:7b)"
+            echo " 2) Cloud Google Gemini (gemini-2.5-flash)"
+            echo " 3) Hybrid (Primary Cloud, Fallback Local)"
+            read -r -p "Enter mode [1-3] (default: 3): " vlm_choice
+            case "${vlm_choice:-3}" in
+                1) VLM_MODE="local" ;;
+                2) VLM_MODE="cloud" ;;
+                *) VLM_MODE="hybrid" ;;
+            esac
+            ask_execution_platform
+            dispatch_ros2_cmd "ros2 launch khepera_hybrid_nav hybrid_navigation.launch.py sim:=true rviz:=true dashboard:=true enable_3dgs:=${ENABLE_3DGS} target_description:=\"${TARGET_PROMPT}\" vlm_mode:=${VLM_MODE}"
+            ;;
+        10)
             return
             ;;
         *)

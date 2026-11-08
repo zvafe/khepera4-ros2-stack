@@ -1,0 +1,9 @@
+# Service to verify presence of target object in current observation
+sensor_msgs/Image image
+string target_description
+float32 max_distance_m
+---
+bool success
+bool is_present
+float32 confidence
+string reasoning

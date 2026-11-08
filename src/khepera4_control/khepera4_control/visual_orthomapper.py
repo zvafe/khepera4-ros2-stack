@@ -310,7 +310,8 @@ def generate_composite_map(
     res: float = 0.03,
     origin_x: float = -3.0,
     origin_y: float = -3.0,
-    current_pose: Optional[Tuple[float, float, float]] = None
+    current_pose: Optional[Tuple[float, float, float]] = None,
+    draw_labels: bool = False
 ) -> str:
     """
     Generate multi-layer composite map matching survey_specs.md §4.
@@ -372,8 +373,9 @@ def generate_composite_map(
                 fill=(245, 158, 11),
                 outline=(255, 255, 255)
             )
-            kf_id = kf.get('id', '')
-            draw.text((c + 5, y_img - 5), f'KF #{kf_id}', fill=(254, 240, 138))
+            if draw_labels:
+                kf_id = kf.get('id', '')
+                draw.text((c + 5, y_img - 5), f'KF #{kf_id}', fill=(254, 240, 138))
 
     # Optional Layer 7: Current robot footprint
     if current_pose is not None:

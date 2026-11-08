@@ -1,0 +1,8 @@
+# Service to query VLM for Set-of-Marks frontier probabilities
+sensor_msgs/Image image
+Frontier[] candidates
+string target_description
+---
+bool success
+Frontier[] scored_frontiers
+string reasoning
