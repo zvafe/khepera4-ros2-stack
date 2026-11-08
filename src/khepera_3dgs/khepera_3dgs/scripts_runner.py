@@ -139,6 +139,17 @@ def main_cli() -> None:
         default=3.0,
         help="Maximum ceiling height filter in meters (default 3.0m)",
     )
+    parser.add_argument(
+        "--reprocess",
+        action="store_true",
+        help="Reprocess saved keyframe photos from disk without Gazebo simulation",
+    )
+    parser.add_argument(
+        "--load-dir",
+        type=str,
+        default="",
+        help="Path to directory containing saved keyframes (images/ and manifest.json)",
+    )
 
     args = parser.parse_args()
 
@@ -150,7 +161,33 @@ def main_cli() -> None:
         max_height_m=args.max_height,
     )
 
-    if args.bag:
+    depth_maps = None
+
+    if args.reprocess or args.load_dir:
+        target_dir = args.load_dir if args.load_dir else args.output_dir
+        LOGGER.info("Reprocessing saved photos from %s...", target_dir)
+        try:
+            keyframes, images, loaded_depths = SpatialDecimator.load_dataset(target_dir)
+        except Exception as e:
+            LOGGER.error("Failed to load dataset from %s: %s", target_dir, e)
+            sys.exit(1)
+
+        if not keyframes:
+            LOGGER.error("No valid keyframes found in %s", target_dir)
+            sys.exit(1)
+
+        LOGGER.info(
+            "Successfully loaded %d raw keyframe photos from %s", len(keyframes), target_dir
+        )
+        valid_depths = [d for d in loaded_depths if d is not None]
+        if len(valid_depths) >= len(keyframes) * 0.75:
+            last_valid = valid_depths[0]
+            depth_maps = [
+                d if d is not None else last_valid
+                for d in loaded_depths
+            ]
+
+    elif args.bag:
         LOGGER.info("Processing bag %s...", args.bag)
         extractor = RosbagKeyframeExtractor(args.bag)
         samples = extractor.extract_synchronized_samples()
@@ -176,6 +213,7 @@ def main_cli() -> None:
         keyframes=keyframes,
         images_rgb=images,
         ply_filename=args.export_name,
+        depth_maps=depth_maps,
     )
 
     LOGGER.info("SUCCESS! Reconstruction complete: %s", ply_path)

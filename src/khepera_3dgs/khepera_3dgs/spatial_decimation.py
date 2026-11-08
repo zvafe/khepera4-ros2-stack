@@ -215,25 +215,40 @@ class SpatialDecimator:
         self,
         output_dir: str,
         image_subdir: str = "images",
+        depth_maps: Optional[List[Optional[np.ndarray]]] = None,
+        depth_subdir: str = "depth",
     ) -> str:
         """
-        Persist keyframes and manifest to disk for offline training.
+        Persist keyframes, raw photos, and depth maps to disk for offline training.
 
         :param output_dir: Base directory to serialize keyframes.
         :param image_subdir: Relative subfolder for RGB images.
+        :param depth_maps: Optional list of corresponding calibrated depth maps.
+        :param depth_subdir: Relative subfolder for depth maps.
         :return: Path to generated manifest.json file.
         """
         img_dir = os.path.join(output_dir, image_subdir)
         os.makedirs(img_dir, exist_ok=True)
+        if depth_maps is not None:
+            depth_dir = os.path.join(output_dir, depth_subdir)
+            os.makedirs(depth_dir, exist_ok=True)
 
         manifest_records = []
-        for kf, img in zip(self._keyframes, self._images):
+        for idx, (kf, img) in enumerate(zip(self._keyframes, self._images)):
             img_rel_path = os.path.join(image_subdir, f"frame_{kf.id:04d}.png")
             img_abs_path = os.path.join(output_dir, img_rel_path)
             cv2.imwrite(img_abs_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
             rec = kf.to_dict()
             rec["image_path"] = img_rel_path
+
+            if depth_maps is not None and idx < len(depth_maps) and depth_maps[idx] is not None:
+                d_map = depth_maps[idx]
+                d_rel_path = os.path.join(depth_subdir, f"depth_{kf.id:04d}.npy")
+                d_abs_path = os.path.join(output_dir, d_rel_path)
+                np.save(d_abs_path, d_map.astype(np.float32))
+                rec["depth_path"] = d_rel_path
+
             manifest_records.append(rec)
 
         manifest_path = os.path.join(output_dir, "manifest.json")
@@ -241,3 +256,63 @@ class SpatialDecimator:
             json.dump({"keyframes": manifest_records}, f, indent=2)
 
         return manifest_path
+
+    export_keyframes = export_dataset
+
+    @classmethod
+    def load_dataset(
+        cls,
+        source_dir_or_manifest: str,
+    ) -> Tuple[List[KeyframeData], List[np.ndarray], List[Optional[np.ndarray]]]:
+        """
+        Load persisted keyframes, RGB images, and depth maps from disk.
+
+        :param source_dir_or_manifest: Directory containing manifest.json or direct manifest path.
+        :return: (keyframes_list, images_rgb_list, depth_maps_list)
+        """
+        if os.path.isdir(source_dir_or_manifest):
+            manifest_path = os.path.join(source_dir_or_manifest, "manifest.json")
+            base_dir = source_dir_or_manifest
+        else:
+            manifest_path = source_dir_or_manifest
+            base_dir = os.path.dirname(manifest_path)
+
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        records = data.get("keyframes", [])
+        keyframes: List[KeyframeData] = []
+        images: List[np.ndarray] = []
+        depths: List[Optional[np.ndarray]] = []
+
+        for rec in records:
+            kf = KeyframeData.from_dict(rec)
+            img_rel = rec.get("image_path", "")
+            img_abs = os.path.join(base_dir, img_rel)
+            if not os.path.exists(img_abs):
+                continue
+            bgr = cv2.imread(img_abs)
+            if bgr is None:
+                continue
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+            d_map: Optional[np.ndarray] = None
+            depth_rel = rec.get("depth_path", "")
+            if depth_rel:
+                depth_abs = os.path.join(base_dir, depth_rel)
+                if os.path.exists(depth_abs):
+                    if depth_abs.endswith(".npy"):
+                        d_map = np.load(depth_abs).astype(np.float32)
+                    elif depth_abs.endswith(".png"):
+                        d_raw = cv2.imread(depth_abs, cv2.IMREAD_UNCHANGED)
+                        if d_raw is not None:
+                            d_map = d_raw.astype(np.float32) / 1000.0
+
+            keyframes.append(kf)
+            images.append(rgb)
+            depths.append(d_map)
+
+        return keyframes, images, depths

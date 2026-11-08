@@ -265,6 +265,15 @@ class Khepera3DGSNode(Node):
             if depths is not None:
                 depths.append(depths[0])
 
+        # Persist raw keyframe photos, depth maps, and metadata to disk for offline reprocessing
+        try:
+            self.decimator.export_dataset(self.output_dir, depth_maps=depths)
+            self.get_logger().info(
+                f"Persisted {len(kfs)} raw photos, depth maps, and manifest to {self.output_dir}"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"Failed to persist dataset to disk: {e}")
+
         def _train_worker():
             self._is_training = True
             try:
@@ -317,6 +326,18 @@ class Khepera3DGSNode(Node):
         with self._lock:
             kfs = list(self.decimator.keyframes)
             imgs = list(self.decimator.images)
+            depths: Optional[List[np.ndarray]] = None
+            valid_depths = [d for d in self._keyframe_depths if d is not None]
+            if len(valid_depths) > 0 and len(valid_depths) >= len(kfs) * 0.75:
+                last_valid = valid_depths[0]
+                resolved_depths = []
+                for d in self._keyframe_depths:
+                    if d is not None:
+                        last_valid = d
+                        resolved_depths.append(d.copy())
+                    else:
+                        resolved_depths.append(last_valid.copy())
+                depths = resolved_depths
 
         if len(kfs) < 1:
             self.get_logger().warn(
@@ -327,6 +348,17 @@ class Khepera3DGSNode(Node):
         if len(kfs) == 1:
             kfs.append(kfs[0])
             imgs.append(imgs[0])
+            if depths is not None:
+                depths.append(depths[0])
+
+        # Persist raw keyframe photos, depth maps, and metadata to disk
+        try:
+            self.decimator.export_dataset(self.output_dir, depth_maps=depths)
+            self.get_logger().info(
+                f"Persisted {len(kfs)} raw photos, depth maps, and manifest to {self.output_dir}"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"Failed to persist dataset to disk: {e}")
 
         self._is_training = True
         self.get_logger().info(
@@ -334,7 +366,11 @@ class Khepera3DGSNode(Node):
         )
         try:
             ply_path = self.coordinator.run_reconstruction(
-                kfs, imgs, ply_filename=self.ply_name
+                kfs,
+                imgs,
+                ply_filename=self.ply_name,
+                depth_maps=depths,
+                progress_callback=self.get_logger().info,
             )
             self.get_logger().info(
                 f"✓ Auto-training complete! Model saved to: {ply_path}"
@@ -345,6 +381,18 @@ class Khepera3DGSNode(Node):
             return None
         finally:
             self._is_training = False
+
+    def destroy_node(self) -> bool:
+        """Persist collected keyframes and destroy ROS node resources."""
+        with self._lock:
+            if len(self.decimator.keyframes) > 0:
+                try:
+                    self.decimator.export_dataset(
+                        self.output_dir, depth_maps=self._keyframe_depths
+                    )
+                except Exception:
+                    pass
+        return super().destroy_node()
 
 
 def main(args=None):

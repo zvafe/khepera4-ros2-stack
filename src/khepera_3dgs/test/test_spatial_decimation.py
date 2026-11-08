@@ -95,3 +95,41 @@ def test_displacement_and_rotation_gating():
     kf_rot = decimator.add_frame(2.5, dummy_img, 0.12, 0.0, yaw_15deg)
     assert kf_rot is not None
     assert kf_rot.id == 2
+
+
+def test_export_and_load_dataset(tmp_path):
+    """Verify round-trip export and reload of keyframes, photos, and depth maps."""
+    decimator = SpatialDecimator(
+        min_translation_m=0.10,
+        min_rotation_deg=10.0,
+        min_laplacian_var=0.0,
+    )
+    img0 = np.full((100, 100, 3), 50, dtype=np.uint8)
+    img1 = np.full((100, 100, 3), 150, dtype=np.uint8)
+    depth0 = np.full((100, 100), 1.25, dtype=np.float32)
+    depth1 = np.full((100, 100), 2.50, dtype=np.float32)
+
+    decimator.add_frame(1.0, img0, 0.0, 0.0, 0.0)
+    decimator.add_frame(2.0, img1, 0.2, 0.0, 0.0)
+
+    export_dir = str(tmp_path / "dataset")
+    manifest_path = decimator.export_dataset(
+        export_dir,
+        depth_maps=[depth0, depth1],
+    )
+    assert manifest_path is not None
+
+    # Reload from directory
+    kfs, imgs, depths = SpatialDecimator.load_dataset(export_dir)
+    assert len(kfs) == 2
+    assert len(imgs) == 2
+    assert len(depths) == 2
+
+    assert kfs[0].x == 0.0
+    assert kfs[1].x == 0.2
+    assert imgs[0].shape == (100, 100, 3)
+    assert np.allclose(imgs[0], 50)
+    assert np.allclose(imgs[1], 150)
+    assert depths[0] is not None
+    assert np.allclose(depths[0], 1.25)
+    assert np.allclose(depths[1], 2.50)

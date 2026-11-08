@@ -190,9 +190,10 @@ menu_single_robot() {
             echo " 1) 🚀 Launch Gazebo Sim + Mapping + 3DGS (Auto-extracts keyframes & trains on exit)"
             echo " 2) Online Live Pipeline Node (Subscribes to /camera/image_raw & /tf)"
             echo " 3) Offline Rosbag Reconstruction (extract from recorded .db3/.mcap)"
-            echo " 4) Synthetic Test Tour (24-view circular tour, quick train & export)"
-            echo " 5) Back"
-            read -r -p "Select execution mode [1-5] (default: 1): " splat_mode
+            echo " 4) ⚡ Reprocess Saved Photos (Train directly from saved photos & depth, no Gazebo simulation)"
+            echo " 5) Synthetic Test Tour (24-view circular tour, quick train & export)"
+            echo " 6) Back"
+            read -r -p "Select execution mode [1-6] (default: 1): " splat_mode
             case "${splat_mode:-1}" in
                 1)
                     read -r -p "Enable Autonomous Exploration (true/false) [default: true]: " auto_input
@@ -219,6 +220,16 @@ menu_single_robot() {
                     fi
                     ;;
                 4)
+                    read -r -p "Enter path to saved keyframes directory [default: output/khepera_3dgs]: " load_input
+                    LOAD_DIR="${load_input:-output/khepera_3dgs}"
+                    read -r -p "Number of training iterations [default: 2000]: " iter_input
+                    TRAIN_ITERS="${iter_input:-2000}"
+                    read -r -p "Exported PLY filename [default: khepera_supersplat.ply]: " ply_input
+                    PLY_NAME="${ply_input:-khepera_supersplat.ply}"
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 run khepera_3dgs train_khepera_3dgs --reprocess --load-dir \"${LOAD_DIR}\" --iterations ${TRAIN_ITERS} --export-name \"${PLY_NAME}\""
+                    ;;
+                5)
                     read -r -p "Number of training iterations [default: 2000]: " iter_input
                     TRAIN_ITERS="${iter_input:-2000}"
                     ask_execution_platform
