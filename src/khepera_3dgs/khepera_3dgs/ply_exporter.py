@@ -1,7 +1,7 @@
 """Standard Inria / PlayCanvas SuperSplat binary PLY exporter for 3D Gaussian Splatting."""
 
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 from scipy.spatial.transform import Rotation as ScipyRotation
@@ -27,6 +27,9 @@ class SuperSplatPlyExporter:
         is_log_scale: bool = True,
         is_logit_opacity: bool = True,
         align_supersplat_y_up: bool = False,
+        bounds_x: Optional[Tuple[float, float]] = None,
+        bounds_y: Optional[Tuple[float, float]] = None,
+        bounds_z: Optional[Tuple[float, float]] = None,
     ) -> str:
         """
         Serialize 3D Gaussians to binary little-endian PLY file.
@@ -67,15 +70,43 @@ class SuperSplatPlyExporter:
         opacities = np.asarray(opacities, dtype=np.float32).reshape(n_pts, 1)
         sh_dc = np.asarray(sh_dc, dtype=np.float32).reshape(n_pts, 3)
 
+        # Boundary and ceiling clipping in ROS coordinates
+        if bounds_x is not None or bounds_y is not None or bounds_z is not None:
+            mask = np.ones(n_pts, dtype=bool)
+            if bounds_x is not None:
+                mask &= (means[:, 0] >= bounds_x[0]) & (means[:, 0] <= bounds_x[1])
+            if bounds_y is not None:
+                mask &= (means[:, 1] >= bounds_y[0]) & (means[:, 1] <= bounds_y[1])
+            if bounds_z is not None:
+                mask &= (means[:, 2] >= bounds_z[0]) & (means[:, 2] <= bounds_z[1])
+            if np.any(mask):
+                means = means[mask]
+                scales = scales[mask]
+                quats = quats[mask]
+                opacities = opacities[mask]
+                sh_dc = sh_dc[mask]
+                if sh_rest is not None:
+                    sh_rest = sh_rest[mask]
+                n_pts = len(means)
+
+        # Ensure floor plane Gaussians (|Z| <= 0.02 in ROS frame) maintain solid visible opacity
+        floor_mask = np.abs(means[:, 2]) <= 0.02
+        if np.any(floor_mask):
+            if is_logit_opacity:
+                opacities[floor_mask] = np.maximum(opacities[floor_mask], 0.85)
+            else:
+                opacities[floor_mask] = np.maximum(opacities[floor_mask], 0.70)
+
         # Transform ROS Z-up frame to WebGL/SuperSplat Y-up frame if requested
         if align_supersplat_y_up:
             # SuperSplat applies default [0, 0, 180] Euler rotation on import.
-            # Pre-rotating by R_z(180)^-1 * R_x(-90) ensures that upon import:
-            # X_view = X_ros, Y_view = Z_ros (Up), Z_view = -Y_ros
-            r_z180 = ScipyRotation.from_euler("z", 180, degrees=True)
-            r_scene = ScipyRotation.from_euler("x", -90, degrees=True)
-            r_align = r_z180.inv() * r_scene
-            rot_mat = r_align.as_matrix().astype(np.float32)
+            # We map ROS (+X forward, +Y left, +Z up) such that after SuperSplat import:
+            # X_view = -Y_ros (Right), Y_view = +Z_ros (Up), Z_view = -X_ros (Depth)
+            # rot_mat maps [X, Y, Z] -> [Y, -Z, -X], which R_z(180) flips to [-Y, Z, -X].
+            rot_mat = np.array(
+                [[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]], dtype=np.float32
+            )
+            r_align = ScipyRotation.from_matrix(rot_mat)
             means = (rot_mat @ means.T).T
 
             # Normalize and rotate quaternions

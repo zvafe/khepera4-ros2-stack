@@ -1,8 +1,8 @@
 """Unit tests for coordinate lifting, SE(2)->SE(3) compounding, and floor geometry."""
 
 import math
+
 import numpy as np
-import pytest
 
 from khepera_3dgs.coordinate_lifting import CoordinateLifter
 
@@ -130,4 +130,3 @@ def test_ground_plane_clamping_and_sky_filtering():
     floor_pts = pts_world[pts_world[:, 2] <= 0.01]
     assert len(floor_pts) > 0
     assert np.all(np.abs(floor_pts[:, 2]) < 1e-4)
-

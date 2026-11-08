@@ -3,7 +3,7 @@
 import logging
 import os
 import time
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -62,6 +62,8 @@ class ReconstructionPipeline:
         enable_floor_scale: bool = False,
         align_supersplat_y_up: bool = True,
         max_height_m: float = 3.0,
+        arena_bounds_x: Tuple[float, float] = (-2.6, 2.6),
+        arena_bounds_y: Tuple[float, float] = (-2.6, 2.6),
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> None:
         """
@@ -83,6 +85,8 @@ class ReconstructionPipeline:
         :param enable_floor_scale: Enable floor ROI depth scaling (default False).
         :param align_supersplat_y_up: Rotate exported PLY to WebGL/SuperSplat Y-up frame.
         :param max_height_m: Maximum ceiling/arena height in meters (default 3.0m).
+        :param arena_bounds_x: (min_x, max_x) map boundary limits in meters.
+        :param arena_bounds_y: (min_y, max_y) map boundary limits in meters.
         :param device: Execution device ('cuda' or 'cpu').
         """
         self.output_dir = os.path.abspath(output_dir)
@@ -93,6 +97,8 @@ class ReconstructionPipeline:
         self.voxel_size = float(voxel_size_m)
         self.align_supersplat_y_up = bool(align_supersplat_y_up)
         self.max_height = float(max_height_m)
+        self.arena_bounds_x = arena_bounds_x
+        self.arena_bounds_y = arena_bounds_y
         self.width = int(width)
         self.height = int(height)
 
@@ -203,6 +209,8 @@ class ReconstructionPipeline:
                 d_min=0.08,
                 d_max=6.00 if self.max_height > 1.0 else 3.50,
                 max_z=self.max_height,
+                bounds_x=self.arena_bounds_x,
+                bounds_y=self.arena_bounds_y,
                 subsample_step=2,
                 is_preclamped=True,
             )
@@ -210,12 +218,21 @@ class ReconstructionPipeline:
                 all_pts.append(pts_w)
                 all_cols.append(cols)
 
+        # Seed continuous floor plane to guarantee 100% floor coverage without holes
+        floor_pts, floor_cols = self.lifter.generate_floor_grid(
+            bounds_x=(self.arena_bounds_x[0] + 0.1, self.arena_bounds_x[1] - 0.1),
+            bounds_y=(self.arena_bounds_y[0] + 0.1, self.arena_bounds_y[1] - 0.1),
+            step=self.voxel_size * 2.0,
+        )
+        all_pts.append(floor_pts)
+        all_cols.append(floor_cols)
+
         if not all_pts:
             raise RuntimeError("Failed to backproject any valid 3D points from depth maps.")
 
         merged_pts = np.vstack(all_pts)
         merged_cols = np.vstack(all_cols)
-        LOGGER.info("Raw backprojected points: %d", len(merged_pts))
+        LOGGER.info("Raw backprojected points (including floor): %d", len(merged_pts))
 
         fused_pts, fused_cols = self.lifter.voxel_downsample(
             merged_pts, merged_cols, voxel_size=self.voxel_size
@@ -311,6 +328,8 @@ class ReconstructionPipeline:
                 n_pruned = trainer.prune_low_opacity(
                     max_scale_thresh=0.08,
                     max_z=self.max_height,
+                    x_bounds=self.arena_bounds_x,
+                    y_bounds=self.arena_bounds_y,
                 )
                 if n_pruned > 0:
                     _report(
@@ -336,6 +355,8 @@ class ReconstructionPipeline:
             prune_opacity_thresh=0.08,
             max_scale_thresh=0.08,
             max_z=self.max_height,
+            x_bounds=self.arena_bounds_x,
+            y_bounds=self.arena_bounds_y,
         )
         if final_pruned > 0:
             LOGGER.info("Final cleanup pruned %d out-of-bounds/floater Gaussians", final_pruned)
@@ -353,6 +374,9 @@ class ReconstructionPipeline:
             is_log_scale=True,
             is_logit_opacity=True,
             align_supersplat_y_up=self.align_supersplat_y_up,
+            bounds_x=self.arena_bounds_x,
+            bounds_y=self.arena_bounds_y,
+            bounds_z=(-0.05, self.max_height),
         )
 
         elapsed = time.time() - t_start

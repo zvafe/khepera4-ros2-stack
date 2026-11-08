@@ -53,8 +53,13 @@ class SeparableSSIM(torch.nn.Module):
         out = F.conv2d(x, self.w_h, padding=(0, self.pad), groups=self.channel)
         return F.conv2d(out, self.w_v, padding=(self.pad, 0), groups=self.channel)
 
-    def forward(self, img1: torch.Tensor, img2: torch.Tensor) -> torch.Tensor:
-        """Compute scalar SSIM in [0, 1]."""
+    def forward(
+        self,
+        img1: torch.Tensor,
+        img2: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compute scalar SSIM in [0, 1] with optional spatial masking."""
         if img1.shape[-1] == self.channel:
             img1 = img1.permute(0, 3, 1, 2)
         if img2.shape[-1] == self.channel:
@@ -72,6 +77,12 @@ class SeparableSSIM(torch.nn.Module):
         ssim_map = ((2 * mu1_mu2 + c1) * (2 * sigma12 + c2)) / (
             (mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2)
         )
+        if mask is not None:
+            if mask.ndim == 4 and mask.shape[-1] == self.channel:
+                mask = mask.permute(0, 3, 1, 2)
+            if mask.any():
+                return ssim_map[mask].mean()
+            return torch.tensor(1.0, device=img1.device)
         return ssim_map.mean()
 
 
@@ -80,6 +91,7 @@ def compute_ssim_loss(
     img2: torch.Tensor,
     window_size: int = 11,
     channel: int = 3,
+    mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Compute Structural Similarity Index (SSIM) between two image tensors in [0, 1].
@@ -88,10 +100,11 @@ def compute_ssim_loss(
     :param img2: (1, H, W, C) or (1, C, H, W) float32 tensor.
     :param window_size: Kernel dimension (default 11).
     :param channel: Number of color channels (default 3).
+    :param mask: Optional boolean mask of valid pixels.
     :return: Scalar SSIM value in [0, 1].
     """
     ssim_mod = SeparableSSIM(window_size=window_size, channel=channel).to(img1.device)
-    return ssim_mod(img1, img2)
+    return ssim_mod(img1, img2, mask=mask)
 
 
 class GaussianModel:
@@ -346,12 +359,28 @@ class GsplatTrainer:
             render_mode="RGB+ED",
         )
 
-        pred_img = renders[..., :3]  # (1, H, W, 3)
+        raw_pred_img = renders[..., :3]  # (1, H, W, 3)
         pred_depth = renders[..., 3]  # (1, H, W)
 
-        # Photometric losses
-        l1_loss = F.l1_loss(pred_img, gt_image)
-        ssim_val = self.ssim_loss(pred_img, gt_image)
+        # Dynamic sky background blending: composite transparent sky pixels with ambient sky color.
+        # This eliminates the black-background penalty that otherwise forces dense clouds in open sky.
+        sky_rgb = gt_image[:, :10, :, :].mean(dim=(1, 2), keepdim=True)
+        pred_img = raw_pred_img + (1.0 - alphas) * sky_rgb
+
+        # Photometric losses with open-sky exclusion for low-wall simulation
+        if self.max_z <= 0.60:
+            v_rows = torch.arange(height, device=self.device).view(1, height, 1, 1)
+            cy = k_mat[0, 1, 2]
+            valid_rows = (v_rows >= (cy - 10.0)).expand_as(gt_image)
+            l1_loss = F.l1_loss(pred_img[valid_rows], gt_image[valid_rows])
+            valid_mask_ssim = (v_rows >= (cy - 10.0)).permute(0, 3, 1, 2).expand(
+                1, 3, height, width
+            )
+            ssim_val = self.ssim_loss(pred_img, gt_image, mask=valid_mask_ssim)
+        else:
+            l1_loss = F.l1_loss(pred_img, gt_image)
+            ssim_val = self.ssim_loss(pred_img, gt_image)
+
         rgb_loss = (1.0 - self.lambda_ssim) * l1_loss + self.lambda_ssim * (1.0 - ssim_val)
 
         # Dense Depth loss (SplaTAM formulation)
@@ -427,16 +456,29 @@ class GsplatTrainer:
             means = self.model.means
             z_pos = means[:, 2]
 
-            keep_mask = (
+            # Preserve continuous floor plane Gaussians (|Z| <= 0.02) from floater pruning
+            is_floor = torch.abs(z_pos) <= 0.02
+            if x_bounds is not None:
+                is_floor = is_floor & (means[:, 0] >= x_bounds[0]) & (means[:, 0] <= x_bounds[1])
+            if y_bounds is not None:
+                is_floor = is_floor & (means[:, 1] >= y_bounds[0]) & (means[:, 1] <= y_bounds[1])
+
+            keep_mask = is_floor | (
                 (cur_opacities >= thresh)
                 & (max_scale <= max_scale_thresh)
                 & (z_pos >= z_min)
                 & (z_pos <= z_max)
             )
             if x_bounds is not None:
-                keep_mask = keep_mask & (means[:, 0] >= x_bounds[0]) & (means[:, 0] <= x_bounds[1])
+                keep_mask = (
+                    keep_mask & (means[:, 0] >= x_bounds[0]) & (means[:, 0] <= x_bounds[1])
+                )
             if y_bounds is not None:
-                keep_mask = keep_mask & (means[:, 1] >= y_bounds[0]) & (means[:, 1] <= y_bounds[1])
+                keep_mask = (
+                    keep_mask & (means[:, 1] >= y_bounds[0]) & (means[:, 1] <= y_bounds[1])
+                )
+            # Strictly reject any points above ceiling height
+            keep_mask = keep_mask & (z_pos <= z_max) & (z_pos >= z_min)
 
             n_pruned = int((~keep_mask).sum().item())
 
@@ -468,6 +510,8 @@ class GsplatTrainer:
         with torch.no_grad():
             avg_grads = self._grad_accum / torch.clamp(self._grad_counts.float(), min=1.0)
             high_grad_mask = (avg_grads >= self.grad_thresh) & (self._grad_counts > 0)
+            # Never densify ceiling floaters or points above wall height
+            high_grad_mask = high_grad_mask & (self.model.means[:, 2] <= self.max_z)
 
             if not high_grad_mask.any():
                 self._grad_accum.zero_()

@@ -1,7 +1,7 @@
 """Coordinate lifting, SE(2) compounding, and point cloud seeding for Khepera IV."""
 
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -187,6 +187,8 @@ class CoordinateLifter:
         subsample_step: int = 1,
         min_z: float = -0.02,
         max_z: float = 3.00,
+        bounds_x: Optional[Tuple[float, float]] = None,
+        bounds_y: Optional[Tuple[float, float]] = None,
         is_preclamped: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -200,6 +202,8 @@ class CoordinateLifter:
         :param subsample_step: Pixel subsampling stride.
         :param min_z: Minimum allowable world Z coordinate (subterranean filter).
         :param max_z: Maximum allowable world Z coordinate (sky/ceiling filter).
+        :param bounds_x: Optional (min_x, max_x) arena boundary filter.
+        :param bounds_y: Optional (min_y, max_y) arena boundary filter.
         :param is_preclamped: Whether ground plane was already clamped.
         :return: (points_world_Nx3, colors_rgb_Nx3)
         """
@@ -226,16 +230,52 @@ class CoordinateLifter:
         pts_world = (r_mat @ pts_cam + t_vec).T.astype(np.float32)
 
         # Discard subterranean points and open sky / ceiling floaters
-        valid_z = (pts_world[:, 2] >= min_z) & (pts_world[:, 2] <= max_z)
-        if not np.any(valid_z):
+        valid_mask = (pts_world[:, 2] >= min_z) & (pts_world[:, 2] <= max_z)
+        if bounds_x is not None:
+            valid_mask &= (pts_world[:, 0] >= bounds_x[0]) & (pts_world[:, 0] <= bounds_x[1])
+        if bounds_y is not None:
+            valid_mask &= (pts_world[:, 1] >= bounds_y[0]) & (pts_world[:, 1] <= bounds_y[1])
+
+        if not np.any(valid_mask):
             return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)
 
-        pts_world = pts_world[valid_z]
-        v_sub = v_grid[valid][valid_z]
-        u_sub = u_grid[valid][valid_z]
+        pts_world = pts_world[valid_mask]
+        v_sub = v_grid[valid][valid_mask]
+        u_sub = u_grid[valid][valid_mask]
         colors = (image_rgb[v_sub, u_sub].astype(np.float32) / 255.0)
 
         return pts_world, colors
+
+    @staticmethod
+    def generate_floor_grid(
+        bounds_x: Tuple[float, float] = (-2.4, 2.4),
+        bounds_y: Tuple[float, float] = (-2.4, 2.4),
+        floor_z: float = 0.0,
+        floor_color: Tuple[float, float, float] = (0.85, 0.85, 0.87),
+        step: float = 0.03,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate continuous floor plane seed Gaussians to ensure 100% gap-free floor geometry.
+
+        :param bounds_x: (min_x, max_x) floor extents in map frame.
+        :param bounds_y: (min_y, max_y) floor extents in map frame.
+        :param floor_z: Elevation of the ground plane (0.0m).
+        :param floor_color: Default floor RGB color in [0, 1].
+        :param step: Grid spacing in meters (default 0.03m = 3cm).
+        :return: (floor_points_Nx3, floor_colors_Nx3)
+        """
+        xs = np.arange(bounds_x[0], bounds_x[1] + 1e-4, step, dtype=np.float32)
+        ys = np.arange(bounds_y[0], bounds_y[1] + 1e-4, step, dtype=np.float32)
+        grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
+        flat_x = grid_x.ravel()
+        flat_y = grid_y.ravel()
+        flat_z = np.full_like(flat_x, floor_z, dtype=np.float32)
+
+        floor_pts = np.column_stack([flat_x, flat_y, flat_z])
+        floor_cols = np.tile(
+            np.array(floor_color, dtype=np.float32), (len(floor_pts), 1)
+        )
+        return floor_pts, floor_cols
 
     @staticmethod
     def voxel_downsample(

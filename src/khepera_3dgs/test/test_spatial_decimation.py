@@ -1,8 +1,8 @@
 """Unit tests for spatial decimation and frame gating."""
 
 import math
+
 import numpy as np
-import pytest
 
 from khepera_3dgs.spatial_decimation import SpatialDecimator
 

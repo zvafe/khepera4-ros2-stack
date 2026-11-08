@@ -3,10 +3,10 @@ khepera_3dgs_node:
     output_dir: "output/khepera_3dgs"
     camera_height_m: 0.0283
     camera_x_offset_m: 0.0682
-    min_translation_m: 0.05
-    min_rotation_deg: 5.0
-    max_linear_vel_mps: 0.35
-    max_angular_vel_radps: 1.00
+    min_translation_m: 0.06
+    min_rotation_deg: 8.0
+    max_linear_vel_mps: 0.30
+    max_angular_vel_radps: 0.35
     num_iterations: 2000
     voxel_size_m: 0.015
     export_ply_name: "khepera_supersplat.ply"
@@ -17,5 +17,7 @@ khepera_3dgs_node:
     train_on_shutdown: true
     enable_floor_scale: false
     align_supersplat_y_up: true
-    max_height_m: 3.0
+    max_height_m: 0.38
+    arena_bounds_x: [-2.55, 2.55]
+    arena_bounds_y: [-2.55, 2.55]
 

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+
 import numpy as np
 from plyfile import PlyData
 import pytest
@@ -103,19 +104,19 @@ def test_supersplat_y_up_alignment():
 
         ply_data = PlyData.read(out_ply)
         v = ply_data["vertex"]
-        # In pre-rotated PLY coordinates: X_ply = -1.0, Y_ply = -3.0, Z_ply = -2.0
-        assert np.isclose(v["x"][0], -1.0, atol=1e-4)
+        # In pre-rotated PLY coordinates:
+        # X_ply = Y_ros = 2.0, Y_ply = -Z_ros = -3.0, Z_ply = -X_ros = -1.0
+        assert np.isclose(v["x"][0], 2.0, atol=1e-4)
         assert np.isclose(v["y"][0], -3.0, atol=1e-4)
-        assert np.isclose(v["z"][0], -2.0, atol=1e-4)
+        assert np.isclose(v["z"][0], -1.0, atol=1e-4)
 
         # Upon import, SuperSplat automatically applies [0, 0, 180] Euler rotation.
         # Confirm that after SuperSplat default rotation, the scene is upright:
-        # X_view = 1.0 (X_ros), Y_view = 3.0 (Z_ros height / Up), Z_view = -2.0 (-Y_ros forward)
+        # X_view = -2.0 (-Y_ros), Y_view = 3.0 (+Z_ros height / Up), Z_view = -1.0 (-X_ros depth)
         from scipy.spatial.transform import Rotation as ScipyRotation
+
         r_ss = ScipyRotation.from_euler("z", 180, degrees=True)
         v_ss = r_ss.apply(np.array([v["x"][0], v["y"][0], v["z"][0]]))
-        assert np.isclose(v_ss[0], 1.0, atol=1e-4)
+        assert np.isclose(v_ss[0], -2.0, atol=1e-4)
         assert np.isclose(v_ss[1], 3.0, atol=1e-4)
-        assert np.isclose(v_ss[2], -2.0, atol=1e-4)
-
-
+        assert np.isclose(v_ss[2], -1.0, atol=1e-4)

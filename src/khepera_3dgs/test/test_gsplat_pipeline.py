@@ -2,9 +2,9 @@
 
 import os
 import tempfile
+
 import numpy as np
 from plyfile import PlyData
-import pytest
 import torch
 
 from khepera_3dgs.gsplat_trainer import GaussianModel, GsplatTrainer
@@ -108,4 +108,3 @@ def test_adaptive_densification_and_pruning():
     # Test pruning
     n_pruned = trainer.prune_low_opacity(prune_opacity_thresh=0.99)
     assert n_pruned > 0
-

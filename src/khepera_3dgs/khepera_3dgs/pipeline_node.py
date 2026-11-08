@@ -1,12 +1,14 @@
 """ROS 2 node for online keyframe capture, 3DGS training, and SuperSplat export."""
 
 import threading
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 from geometry_msgs.msg import TransformStamped
 import numpy as np
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_srvs.srv import Trigger
@@ -42,6 +44,8 @@ class Khepera3DGSNode(Node):
         self.declare_parameter("enable_floor_scale", False)
         self.declare_parameter("align_supersplat_y_up", True)
         self.declare_parameter("max_height_m", 3.0)
+        self.declare_parameter("arena_bounds_x", [-2.6, 2.6])
+        self.declare_parameter("arena_bounds_y", [-2.6, 2.6])
 
         self.output_dir = str(self.get_parameter("output_dir").value)
         self.cam_h = float(self.get_parameter("camera_height_m").value)
@@ -61,6 +65,10 @@ class Khepera3DGSNode(Node):
         self.enable_floor_scale = bool(self.get_parameter("enable_floor_scale").value)
         self.align_supersplat_y_up = bool(self.get_parameter("align_supersplat_y_up").value)
         self.max_height = float(self.get_parameter("max_height_m").value)
+        bounds_x_val = self.get_parameter("arena_bounds_x").value
+        self.arena_bounds_x = (float(bounds_x_val[0]), float(bounds_x_val[1]))
+        bounds_y_val = self.get_parameter("arena_bounds_y").value
+        self.arena_bounds_y = (float(bounds_y_val[0]), float(bounds_y_val[1]))
 
         # Core pipeline components
         self.decimator = SpatialDecimator(
@@ -79,7 +87,11 @@ class Khepera3DGSNode(Node):
             enable_floor_scale=self.enable_floor_scale,
             align_supersplat_y_up=self.align_supersplat_y_up,
             max_height_m=self.max_height,
+            arena_bounds_x=self.arena_bounds_x,
+            arena_bounds_y=self.arena_bounds_y,
         )
+
+        self.cb_group = ReentrantCallbackGroup()
 
         # TF listener for robot map pose
         self.tf_buffer = tf2_ros.Buffer()
@@ -87,20 +99,26 @@ class Khepera3DGSNode(Node):
 
         # Subscriptions
         self.image_sub = self.create_subscription(
-            Image, self.img_topic, self._handle_image, 10
+            Image, self.img_topic, self._handle_image, 10, callback_group=self.cb_group
         )
         self.depth_sub = None
         if self.depth_topic:
             self.depth_sub = self.create_subscription(
-                Image, self.depth_topic, self._handle_depth, 10
+                Image, self.depth_topic, self._handle_depth, 10, callback_group=self.cb_group
             )
 
         # Services
         self.train_srv = self.create_service(
-            Trigger, "/khepera_3dgs/trigger_reconstruction", self._handle_reconstruct
+            Trigger,
+            "/khepera_3dgs/trigger_reconstruction",
+            self._handle_reconstruct,
+            callback_group=self.cb_group,
         )
         self.clear_srv = self.create_service(
-            Trigger, "/khepera_3dgs/clear", self._handle_clear
+            Trigger,
+            "/khepera_3dgs/clear",
+            self._handle_clear,
+            callback_group=self.cb_group,
         )
 
         self._lock = threading.Lock()
@@ -121,7 +139,11 @@ class Khepera3DGSNode(Node):
         if self._is_training:
             return
 
-        # Lookup transform map -> base_footprint at image timestamp (fallback to latest available)
+        # If sensor depth topic is configured, wait until depth frames are active
+        if self.depth_topic and self._latest_depth is None:
+            return
+
+        # Lookup transform map -> base_footprint at exact image timestamp
         t_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         transform: Optional[TransformStamped] = None
         try:
@@ -129,18 +151,11 @@ class Khepera3DGSNode(Node):
                 self.map_frame,
                 self.base_frame,
                 rclpy.time.Time.from_msg(msg.header.stamp),
-                timeout=rclpy.duration.Duration(seconds=0.03),
+                timeout=rclpy.duration.Duration(seconds=0.08),
             )
         except Exception:
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    self.map_frame,
-                    self.base_frame,
-                    rclpy.time.Time(),
-                    timeout=rclpy.duration.Duration(seconds=0.03),
-                )
-            except Exception:
-                return
+            # Drop frame rather than accepting stale or extrapolated pose during turns
+            return
 
         tx = transform.transform.translation.x
         ty = transform.transform.translation.y
@@ -225,15 +240,18 @@ class Khepera3DGSNode(Node):
         with self._lock:
             kfs = list(self.decimator.keyframes)
             imgs = list(self.decimator.images)
-            has_all_depths = (
-                len(self._keyframe_depths) == len(kfs)
-                and all(d is not None for d in self._keyframe_depths)
-            )
-            depths = (
-                [d.copy() for d in self._keyframe_depths if d is not None]
-                if has_all_depths
-                else None
-            )
+            depths: Optional[List[np.ndarray]] = None
+            valid_depths = [d for d in self._keyframe_depths if d is not None]
+            if len(valid_depths) > 0 and len(valid_depths) >= len(kfs) * 0.75:
+                last_valid = valid_depths[0]
+                resolved_depths = []
+                for d in self._keyframe_depths:
+                    if d is not None:
+                        last_valid = d
+                        resolved_depths.append(d.copy())
+                    else:
+                        resolved_depths.append(last_valid.copy())
+                depths = resolved_depths
 
         if len(kfs) < 1:
             response.success = False
@@ -330,17 +348,20 @@ class Khepera3DGSNode(Node):
 
 
 def main(args=None):
-    """Run the Khepera 3DGS reconstruction node."""
+    """Run the Khepera 3DGS reconstruction node with concurrent execution."""
     rclpy.init(args=args)
     node = Khepera3DGSNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         if node.train_on_shutdown and not node._is_training:
             node.trigger_training_sync()
         node.destroy_node()
+        executor.shutdown()
         if rclpy.ok():
             rclpy.shutdown()
 
