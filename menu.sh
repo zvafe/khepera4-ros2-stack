@@ -39,7 +39,7 @@ setup_environment() {
         # shellcheck disable=SC1091
         source /opt/ros/jazzy/setup.bash
         cd "${WS_ROOT}"
-        colcon build --symlink-install --packages-select khepera4_description khepera4_control hybrid_nav_interfaces openfrontier_ros semantic_reasoner activesplat_ros khepera_hybrid_nav
+        colcon build --symlink-install --packages-select khepera4_description khepera4_control hybrid_nav_interfaces openfrontier_ros semantic_reasoner activesplat_ros khepera_hybrid_nav khepera_3dgs
         # shellcheck disable=SC1091
         source "${WS_ROOT}/install/setup.bash"
         echo -e "${GREEN}✓ Workspace built and sourced successfully.${NC}"
@@ -124,9 +124,10 @@ menu_single_robot() {
     echo " 7) Pure 3D Gazebo Simulation Baseline (Default World)"
     echo " 8) explore_lite Autonomous Frontier Exploration (Nav2 + SLAM Toolbox)"
     echo " 9) Hybrid OpenFrontier + SplatSearch (VLM Grounded Frontiers + 3DGS)"
-    echo " 10) Back to Main Menu"
+    echo " 10) 3D Gaussian Splatting Reconstruction (Depth-Anything-V2 + gsplat -> SuperSplat PLY)"
+    echo " 11) Back to Main Menu"
     echo ""
-    read -r -p "Select option [1-10]: " choice
+    read -r -p "Select option [1-11]: " choice
 
     case "$choice" in
         1)
@@ -182,6 +183,52 @@ menu_single_robot() {
             dispatch_ros2_cmd "ros2 launch khepera_hybrid_nav hybrid_navigation.launch.py sim:=true rviz:=true dashboard:=true enable_3dgs:=${ENABLE_3DGS} target_description:=\"${TARGET_PROMPT}\" vlm_mode:=${VLM_MODE}"
             ;;
         10)
+            echo ""
+            echo -e "${CYAN}==================================================================${NC}"
+            echo -e "${BOLD}  3D Gaussian Splatting Reconstruction Pipeline (Khepera IV)      ${NC}"
+            echo -e "${CYAN}==================================================================${NC}"
+            echo " 1) 🚀 Launch Gazebo Sim + Mapping + 3DGS (Auto-extracts keyframes & trains on exit)"
+            echo " 2) Online Live Pipeline Node (Subscribes to /camera/image_raw & /tf)"
+            echo " 3) Offline Rosbag Reconstruction (extract from recorded .db3/.mcap)"
+            echo " 4) Synthetic Test Tour (24-view circular tour, quick train & export)"
+            echo " 5) Back"
+            read -r -p "Select execution mode [1-5] (default: 1): " splat_mode
+            case "${splat_mode:-1}" in
+                1)
+                    read -r -p "Enable Autonomous Exploration (true/false) [default: true]: " auto_input
+                    AUTO_EXP="${auto_input:-true}"
+                    read -r -p "Number of 3DGS training iterations [default: 2000]: " iter_input
+                    TRAIN_ITERS="${iter_input:-2000}"
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 launch khepera_3dgs sim_3dgs_reconstruction.launch.py auto_explore:=${AUTO_EXP} iterations:=${TRAIN_ITERS} train_on_shutdown:=true"
+                    ;;
+                2)
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 launch khepera_3dgs 3dgs_pipeline.launch.py"
+                    ;;
+                3)
+                    read -r -p "Enter path to rosbag directory: " bag_input
+                    if [ -z "$bag_input" ]; then
+                        echo -e "${RED}Bag path cannot be empty.${NC}"
+                        sleep 1
+                    else
+                        read -r -p "Number of training iterations [default: 3000]: " iter_input
+                        TRAIN_ITERS="${iter_input:-3000}"
+                        ask_execution_platform
+                        dispatch_ros2_cmd "ros2 run khepera_3dgs train_khepera_3dgs --bag \"${bag_input}\" --iterations ${TRAIN_ITERS} --export-name supersplat_bag"
+                    fi
+                    ;;
+                4)
+                    read -r -p "Number of training iterations [default: 2000]: " iter_input
+                    TRAIN_ITERS="${iter_input:-2000}"
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 run khepera_3dgs train_khepera_3dgs --synthetic-test --iterations ${TRAIN_ITERS} --export-name supersplat_khepera"
+                    ;;
+                *)
+                    ;;
+            esac
+            ;;
+        11)
             return
             ;;
         *)

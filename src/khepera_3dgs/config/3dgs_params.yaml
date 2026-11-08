@@ -1,0 +1,19 @@
+khepera_3dgs_node:
+  ros__parameters:
+    output_dir: "output/khepera_3dgs"
+    camera_height_m: 0.0283
+    camera_x_offset_m: 0.0682
+    min_translation_m: 0.05
+    min_rotation_deg: 5.0
+    max_linear_vel_mps: 0.35
+    max_angular_vel_radps: 1.00
+    num_iterations: 2000
+    voxel_size_m: 0.015
+    export_ply_name: "khepera_supersplat.ply"
+    image_topic: "/camera/image_raw"
+    depth_topic: "/camera/depth"
+    map_frame: "map"
+    base_frame: "base_footprint"
+    train_on_shutdown: true
+    enable_floor_scale: false
+    align_supersplat_y_up: true

@@ -16,3 +16,8 @@
 [submodule "src/splat_interfaces"]
 	path = src/splat_interfaces
 	url = https://github.com/splat-ros/splat_interfaces.git
+[submodule "third_party/Depth-Anything-V2"]
+	path = third_party/Depth-Anything-V2
+	url = https://github.com/DepthAnything/Depth-Anything-V2.git
+	ignore = untracked
+

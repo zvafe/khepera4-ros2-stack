@@ -59,8 +59,10 @@ physical_robot/onboard_daemon/khepera4_tcp_server
 maps/*.png
 maps/keyframes/
 maps/pointclouds/
+output/
 *.pcd
 *.ply
+*.pth
 
 # Test & coverage artifacts
 .coverage*

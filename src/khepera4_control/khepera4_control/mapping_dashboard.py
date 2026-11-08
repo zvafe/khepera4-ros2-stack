@@ -339,6 +339,27 @@ QPushButton#clear_btn:pressed {
     padding-bottom: 3px;
 }
 
+QPushButton#export_ply_btn {
+    background-color: #4c1d95;
+    border: 1px solid #a855f7;
+    border-radius: 5px;
+    color: #e9d5ff;
+    font-weight: bold;
+    padding: 6px 10px;
+    font-size: 11px;
+}
+QPushButton#export_ply_btn:hover {
+    background-color: #7e22ce;
+    border-color: #c084fc;
+    color: #ffffff;
+}
+QPushButton#export_ply_btn:pressed {
+    background-color: #6b21a8;
+    border-color: #f3e8ff;
+    padding-top: 8px;
+    padding-bottom: 4px;
+}
+
 /* Recenter Button (Indigo / Violet) */
 QPushButton#recenter_btn {
     background-color: #1e1b4b;
@@ -459,6 +480,7 @@ class MappingRosWorker(QObject):
         self.load_map_cli = None
         self.clear_map_cli = None
         self.clear_visual_map_cli = None
+        self.reconstruct_3dgs_cli = None
         self.pin_keyframe_cli = None
         self.recenter_cli = None
         self.set_exp_cli = None
@@ -499,6 +521,9 @@ class MappingRosWorker(QObject):
         self.load_map_cli = self.node.create_client(Trigger, '/load_map')
         self.clear_map_cli = self.node.create_client(Trigger, '/clear_map')
         self.clear_visual_map_cli = self.node.create_client(Trigger, '/clear_visual_map')
+        self.reconstruct_3dgs_cli = self.node.create_client(
+            Trigger, '/khepera_3dgs/trigger_reconstruction'
+        )
         self.pin_keyframe_cli = self.node.create_client(Trigger, '/pin_keyframe')
         self.recenter_cli = self.node.create_client(Trigger, '/recenter_robot')
         self.set_exp_cli = self.node.create_client(SetBool, '/set_explorer')
@@ -1223,7 +1248,14 @@ class MappingDashboardWindow(QMainWindow):
         br_layout.addWidget(self.btn_clear)
         persist_layout.addWidget(btn_row)
 
-        self.lbl_map_toast = QLabel("[Ready] Persistence services online.")
+        self.btn_export_ply = QPushButton("✨ Export 3DGS .PLY (SuperSplat)")
+        self.btn_export_ply.setObjectName("export_ply_btn")
+        self.btn_export_ply.setCursor(Qt.PointingHandCursor)
+        self.btn_export_ply.setToolTip("Trigger 3D Gaussian Splatting reconstruction & export .ply")
+        self.btn_export_ply.clicked.connect(self.on_export_ply_clicked)
+        persist_layout.addWidget(self.btn_export_ply)
+
+        self.lbl_map_toast = QLabel("[Ready] Persistence & 3DGS services online.")
         self.lbl_map_toast.setStyleSheet(
             "background-color: #0f172a; border: 1px solid #1e293b; border-radius: 4px; "
             "color: #f59e0b; font-family: monospace; font-size: 9px; padding: 4px;"
@@ -1612,6 +1644,14 @@ class MappingDashboardWindow(QMainWindow):
             if hasattr(self.ros, 'clear_visual_map_cli') and self.ros.clear_visual_map_cli:
                 self.ros.trigger_service(self.ros.clear_visual_map_cli, 'Clear Visual Map')
         self.update_map_plot()
+
+    def on_export_ply_clicked(self):
+        timestamp = time.strftime("%H:%M:%S")
+        self.lbl_map_toast.setText(f"[{timestamp}] Triggering 3DGS training & PLY export...")
+        if self.ros and self.ros.reconstruct_3dgs_cli:
+            self.ros.trigger_service(self.ros.reconstruct_3dgs_cli, "Export 3DGS PLY")
+        else:
+            self.lbl_map_toast.setText(f"[{timestamp}] 3DGS pipeline service not available.")
 
     def on_feedback_received(self, msg: str):
         timestamp = time.strftime("%H:%M:%S")

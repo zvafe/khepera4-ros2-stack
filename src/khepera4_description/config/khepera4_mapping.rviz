@@ -387,7 +387,7 @@ Visualization Manager:
         Value: /odom
       Value: true
     - Class: rviz_default_plugins/Image
-      Enabled: true
+      Enabled: false
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -399,7 +399,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /camera/image_raw
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -455,35 +455,51 @@ Visualization Manager:
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 4
-      Size (m): 0.035
+      Size (m): 0.03500000014901161
       Style: Flat Squares
       Topic:
         Depth: 5
         Durability Policy: Volatile
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /activesplat/gaussians_cloud
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
-    - Class: gsplat_rviz_plugin/GsplatDisplay
+    - Advanced:
+        Alpha Threshold: 0.05000000074505806
+        Clip Box:
+          Clip Max:
+            X: 10
+            Y: 10
+            Z: 10
+          Clip Min:
+            X: -10
+            Y: -10
+            Z: -10
+          Value: false
+        SH Degree: 0
+        Scene Capture:
+          Capture: false
+          Save Path: /tmp/gsplat_capture.png
+        Sort Backend: CUDA
+        WBOIT:
+          Transparency Mode: Sorted
+          WBOIT Alpha Discard: 0.009999999776482582
+          WBOIT Weight Exponent: 2
+          WBOIT Weight Scale: 5
+      Class: gsplat_rviz_plugin/GsplatDisplay
       Enabled: true
       Name: RVizSplat 3DGS Ellipsoids
       Source: Topic
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /activesplat/splats
+      Splat File: ""
+      Topic: /activesplat/splats
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: OpenFrontier Markers
       Namespaces:
-        openfrontier: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -557,15 +573,15 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.0
-        Y: 0.0
-        Z: 0.1
+        X: 0
+        Y: 0
+        Z: 0.10000000149011612
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.60
+      Pitch: 0.6000000238418579
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
       Yaw: 4.600048542022705
@@ -578,7 +594,7 @@ Window Geometry:
   Height: 644
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000022c0000021efc0200000002fb0000000c00430061006d00650072006101000000430000021e0000001b00fffffffb000000100044006900730070006c006100790073000000011000000151000000d400ffffff000002c20000021e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd00000001000000000000022c0000021efc0200000002fb0000000c00430061006d00650072006100000000430000021e0000001b00fffffffb000000100044006900730070006c006100790073000000011000000151000000d400ffffff000004f40000021e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Width: 1268
-  X: 8
-  Y: 732
+  X: 572
+  Y: 257
