@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -161,6 +161,59 @@ class MetricDepthEstimator:
         )[0, 0]
         return pred.float().cpu().numpy()
 
+    def estimate_raw_depth_batch(
+        self,
+        images_rgb: List[np.ndarray],
+        input_size: int = 518,
+        batch_size: int = 4,
+    ) -> List[np.ndarray]:
+        """
+        Predict uncalibrated metric depth maps in batches with GPU preprocessing.
+
+        :param images_rgb: List of (H, W, 3) uint8 RGB images.
+        :param input_size: Spatial dimension for neural inference.
+        :param batch_size: Chunk size for GPU batching (default 4).
+        :return: List of (H, W) float32 metric depth maps in meters.
+        """
+        if not images_rgb:
+            return []
+
+        if self.model is None:
+            return [self.estimate_raw_depth(img, input_size) for img in images_rgb]
+
+        h, w = images_rgb[0].shape[:2]
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+
+        depth_results: List[np.ndarray] = []
+        n_total = len(images_rgb)
+
+        for start_idx in range(0, n_total, batch_size):
+            chunk = images_rgb[start_idx : start_idx + batch_size]
+            t_chunk = [
+                torch.from_numpy(img).permute(2, 0, 1).to(self.device).float() / 255.0
+                for img in chunk
+            ]
+            batch = torch.stack(t_chunk, dim=0)
+            batch = (batch - mean) / std
+            batch = torch.nn.functional.interpolate(
+                batch, (input_size, input_size), mode="bilinear", align_corners=False
+            )
+            if self.use_fp16:
+                batch = batch.half()
+
+            with torch.no_grad():
+                preds = self.model(batch)
+                preds = torch.nn.functional.interpolate(
+                    preds[:, None], (h, w), mode="bilinear", align_corners=True
+                )[:, 0]
+
+            preds_np = preds.float().cpu().numpy()
+            for idx in range(len(chunk)):
+                depth_results.append(preds_np[idx])
+
+        return depth_results
+
     def calibrate_ground_plane(
         self,
         raw_depth: np.ndarray,
@@ -257,3 +310,53 @@ class MetricDepthEstimator:
             np.save(npy_path, calibrated_depth)
 
         return calibrated_depth, scale_factor
+
+    def process_batch(
+        self,
+        images_rgb: List[np.ndarray],
+        output_dir: Optional[str] = None,
+        frame_ids: Optional[List[int]] = None,
+        batch_size: int = 4,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[np.ndarray]:
+        """
+        Run batched depth estimation and calibration across multiple keyframes.
+
+        :param images_rgb: List of (H, W, 3) RGB uint8 images.
+        :param output_dir: Optional directory to save depth artifacts.
+        :param frame_ids: Optional list of integer IDs for artifact naming.
+        :param batch_size: Inference batch size.
+        :param progress_callback: Optional callback fn(completed_count, total_count).
+        :return: List of (H, W) calibrated float32 depth maps in meters.
+        """
+        n_total = len(images_rgb)
+        if n_total == 0:
+            return []
+
+        if frame_ids is None:
+            frame_ids = list(range(n_total))
+
+        depth_dir = None
+        if output_dir is not None:
+            depth_dir = os.path.join(output_dir, "depth")
+            os.makedirs(depth_dir, exist_ok=True)
+
+        calibrated_depths: List[np.ndarray] = []
+        for start_idx in range(0, n_total, batch_size):
+            chunk_imgs = images_rgb[start_idx : start_idx + batch_size]
+            chunk_ids = frame_ids[start_idx : start_idx + batch_size]
+            raw_chunk = self.estimate_raw_depth_batch(chunk_imgs, batch_size=batch_size)
+
+            for raw_depth, f_id in zip(raw_chunk, chunk_ids):
+                calib_depth, _, _ = self.calibrate_ground_plane(raw_depth)
+                calibrated_depths.append(calib_depth)
+
+                if depth_dir is not None:
+                    depth_mm = np.clip(np.round(calib_depth * 1000.0), 0, 65535).astype(np.uint16)
+                    cv2.imwrite(os.path.join(depth_dir, f"depth_{f_id:04d}.png"), depth_mm)
+                    np.save(os.path.join(depth_dir, f"depth_{f_id:04d}.npy"), calib_depth)
+
+            if progress_callback is not None:
+                progress_callback(len(calibrated_depths), n_total)
+
+        return calibrated_depths

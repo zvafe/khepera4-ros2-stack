@@ -4,6 +4,7 @@ import os
 from typing import Optional
 
 import numpy as np
+from scipy.spatial.transform import Rotation as ScipyRotation
 import torch
 
 
@@ -60,15 +61,14 @@ class SuperSplatPlyExporter:
         if n_pts == 0:
             raise ValueError("Cannot export empty Gaussian field (0 points).")
 
-        means = np.asarray(means, dtype=np.float32).copy()
-        scales = np.asarray(scales, dtype=np.float32).copy()
-        quats = np.asarray(quats, dtype=np.float32).copy()
-        opacities = np.asarray(opacities, dtype=np.float32).reshape(n_pts, 1).copy()
-        sh_dc = np.asarray(sh_dc, dtype=np.float32).reshape(n_pts, 3).copy()
+        means = np.asarray(means, dtype=np.float32)
+        scales = np.asarray(scales, dtype=np.float32)
+        quats = np.asarray(quats, dtype=np.float32)
+        opacities = np.asarray(opacities, dtype=np.float32).reshape(n_pts, 1)
+        sh_dc = np.asarray(sh_dc, dtype=np.float32).reshape(n_pts, 3)
 
         # Transform ROS Z-up frame to WebGL/SuperSplat Y-up frame if requested
         if align_supersplat_y_up:
-            from scipy.spatial.transform import Rotation as ScipyRotation
             # SuperSplat applies default [0, 0, 180] Euler rotation on import.
             # Pre-rotating by R_z(180)^-1 * R_x(-90) ensures that upon import:
             # X_view = X_ros, Y_view = Z_ros (Up), Z_view = -Y_ros
@@ -112,53 +112,20 @@ class SuperSplatPlyExporter:
             sh_rest = None
             n_rest = 0
 
-        # Construct structured NumPy dtype
-        field_names = [
-            ("x", "f4"), ("y", "f4"), ("z", "f4"),
-            ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
-            ("f_dc_0", "f4"), ("f_dc_1", "f4"), ("f_dc_2", "f4"),
-        ]
-
-        if n_rest > 0:
-            for idx in range(n_rest):
-                field_names.append((f"f_rest_{idx}", "f4"))
-
-        field_names.extend([
-            ("opacity", "f4"),
-            ("scale_0", "f4"), ("scale_1", "f4"), ("scale_2", "f4"),
-            ("rot_0", "f4"), ("rot_1", "f4"), ("rot_2", "f4"), ("rot_3", "f4"),
-        ])
-
-        structured_dtype = np.dtype(field_names)
-        ply_data = np.empty(n_pts, dtype=structured_dtype)
-
-        ply_data["x"] = means[:, 0]
-        ply_data["y"] = means[:, 1]
-        ply_data["z"] = means[:, 2]
-
-        ply_data["nx"] = normals[:, 0]
-        ply_data["ny"] = normals[:, 1]
-        ply_data["nz"] = normals[:, 2]
-
-        ply_data["f_dc_0"] = sh_dc[:, 0]
-        ply_data["f_dc_1"] = sh_dc[:, 1]
-        ply_data["f_dc_2"] = sh_dc[:, 2]
-
+        # Fast contiguous buffer serialization (zero-copy memory layout)
+        total_cols = 17 + n_rest
+        flat_buffer = np.empty((n_pts, total_cols), dtype=np.float32)
+        flat_buffer[:, 0:3] = means
+        flat_buffer[:, 3:6] = normals
+        flat_buffer[:, 6:9] = sh_dc
+        col_idx = 9
         if n_rest > 0 and sh_rest is not None:
-            for idx in range(n_rest):
-                ply_data[f"f_rest_{idx}"] = sh_rest[:, idx]
-
-        ply_data["opacity"] = opacities[:, 0]
-
-        ply_data["scale_0"] = scales[:, 0]
-        ply_data["scale_1"] = scales[:, 1]
-        ply_data["scale_2"] = scales[:, 2]
-
-        # Inria / SuperSplat expects rot_0 = w, rot_1 = x, rot_2 = y, rot_3 = z
-        ply_data["rot_0"] = quats[:, 0]
-        ply_data["rot_1"] = quats[:, 1]
-        ply_data["rot_2"] = quats[:, 2]
-        ply_data["rot_3"] = quats[:, 3]
+            flat_buffer[:, col_idx : col_idx + n_rest] = sh_rest
+            col_idx += n_rest
+        flat_buffer[:, col_idx : col_idx + 1] = opacities
+        flat_buffer[:, col_idx + 1 : col_idx + 4] = scales
+        flat_buffer[:, col_idx + 4 : col_idx + 8] = quats
+        ply_bytes = flat_buffer.tobytes()
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
@@ -197,6 +164,6 @@ class SuperSplatPlyExporter:
 
         with open(output_path, "wb") as f_out:
             f_out.write(header_str.encode("ascii"))
-            f_out.write(ply_data.tobytes())
+            f_out.write(ply_bytes)
 
         return os.path.abspath(output_path)

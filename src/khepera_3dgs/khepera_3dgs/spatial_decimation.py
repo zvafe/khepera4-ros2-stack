@@ -14,7 +14,7 @@ import numpy as np
 class KeyframeData:
     """Container for synchronized keyframe visual observation and robot state."""
 
-    id: int
+    id: int  # noqa: A003
     timestamp: float
     x: float
     y: float
@@ -94,7 +94,7 @@ class SpatialDecimator:
             gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
         else:
             gray = image_rgb
-        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        return float(cv2.Laplacian(gray, cv2.CV_32F).var())
 
     @staticmethod
     def normalize_angle(theta: float) -> float:

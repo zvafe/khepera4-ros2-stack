@@ -158,22 +158,24 @@ class ReconstructionPipeline:
             resolved_depth_maps = depth_maps
         else:
             _report("[Phase 1/4] Estimating metric depth via Depth-Anything-V2...")
-            resolved_depth_maps = []
             t_depth_start = time.time()
-            for idx, (kf, img) in enumerate(zip(keyframes, images_rgb)):
-                depth, scale = self.depth_estimator.process_frame(
-                    img, output_dir=self.output_dir, frame_id=kf.id
-                )
-                resolved_depth_maps.append(depth)
-                done = idx + 1
+
+            def _depth_progress(done: int, total: int) -> None:
                 el_depth = time.time() - t_depth_start
-                eta_depth = (el_depth / done) * (n_kf - done) if done < n_kf else 0.0
-                if done % 10 == 0 or done == n_kf or done == 1:
-                    _report(
-                        f"[Phase 1/4] Depth: {done}/{n_kf} ({done / n_kf * 100:.1f}%) | "
-                        f"Elapsed: {format_duration(el_depth)} | "
-                        f"ETA: {format_duration(eta_depth)}"
-                    )
+                eta_depth = (el_depth / done) * (total - done) if done < total else 0.0
+                _report(
+                    f"[Phase 1/4] Depth: {done}/{total} ({done / total * 100:.1f}%) | "
+                    f"Elapsed: {format_duration(el_depth)} | "
+                    f"ETA: {format_duration(eta_depth)}"
+                )
+
+            resolved_depth_maps = self.depth_estimator.process_batch(
+                images_rgb,
+                output_dir=self.output_dir,
+                frame_ids=[kf.id for kf in keyframes],
+                batch_size=4,
+                progress_callback=_depth_progress,
+            )
 
         # Phase 3: Coordinate Lifting & Initial Point Cloud Seeding
         LOGGER.info("[Phase 2/4] Backprojecting and seeding fused point cloud...")
@@ -202,6 +204,7 @@ class ReconstructionPipeline:
                 d_max=6.00 if self.max_height > 1.0 else 3.50,
                 max_z=self.max_height,
                 subsample_step=2,
+                is_preclamped=True,
             )
             if len(pts_w) > 0:
                 all_pts.append(pts_w)
@@ -232,7 +235,9 @@ class ReconstructionPipeline:
             f"({total_iters} steps, {n_kf} views)..."
         )
         gaussian_model = GaussianModel(device=self.device)
-        gaussian_model.initialize_from_pointcloud(fused_pts, fused_cols, k_neighbors=3)
+        gaussian_model.initialize_from_pointcloud(
+            fused_pts, fused_cols, voxel_size_m=self.voxel_size
+        )
 
         trainer = GsplatTrainer(
             gaussian_model=gaussian_model,

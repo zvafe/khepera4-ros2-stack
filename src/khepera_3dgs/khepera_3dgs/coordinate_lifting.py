@@ -1,7 +1,7 @@
 """Coordinate lifting, SE(2) compounding, and point cloud seeding for Khepera IV."""
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 
@@ -55,6 +55,15 @@ class CoordinateLifter:
             dtype=np.float32,
         )
 
+        # Precomputed analytical floor depth ceiling: z_floor_max = zc / denom
+        v_coords = np.arange(self.height, dtype=np.float32)[:, None]
+        cos_p = math.cos(self.pitch)
+        sin_p = math.sin(self.pitch)
+        denom = cos_p * (v_coords - self.cy) / self.fy + sin_p
+        self._floor_mask = denom > 1e-5
+        self._z_floor_max = np.full((self.height, 1), np.inf, dtype=np.float32)
+        self._z_floor_max[self._floor_mask] = self.zc / denom[self._floor_mask]
+
         # Static transform from base_footprint to camera_optical_frame
         # P_base = R_base_cam_ros * P_cam_opt + T_base_cam
         # Optical +X (Right)   -> Base -Y: column 0 is [ 0, -1,  0]^T
@@ -80,6 +89,23 @@ class CoordinateLifter:
         # ROS optical: +X right, +Y down, +Z forward
         # OpenGL:      +X right, +Y up,   +Z back
         self.opt_to_opengl = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+
+        # Preallocated ray grids cache: (h, w, step) -> (v_grid, u_grid, u_norm, v_norm)
+        self._grid_cache: Dict[
+            Tuple[int, int, int], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        ] = {}
+
+    def _get_grid(
+        self, h: int, w: int, step: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Fetch or create cached pixel coordinates and normalized ray directions."""
+        key = (h, w, step)
+        if key not in self._grid_cache:
+            v_grid, u_grid = np.mgrid[0:h:step, 0:w:step]
+            u_norm = ((u_grid - self.cx) / self.fx).astype(np.float32)
+            v_norm = ((v_grid - self.cy) / self.fy).astype(np.float32)
+            self._grid_cache[key] = (v_grid, u_grid, u_norm, v_norm)
+        return self._grid_cache[key]
 
     def compute_pose_matrices(
         self, x: float, y: float, yaw: float
@@ -137,7 +163,10 @@ class CoordinateLifter:
         :param depth_map: (H, W) metric depth map in meters.
         :return: (H, W) ground-plane clamped depth map.
         """
-        h, w = depth_map.shape[:2]
+        if depth_map.shape[0] == self.height:
+            return np.minimum(depth_map, self._z_floor_max)
+
+        h = depth_map.shape[0]
         v_grid = np.arange(h, dtype=np.float32)[:, None]
         cos_p = math.cos(self.pitch)
         sin_p = math.sin(self.pitch)
@@ -146,13 +175,7 @@ class CoordinateLifter:
 
         z_floor_max = np.full((h, 1), np.inf, dtype=np.float32)
         z_floor_max[floor_mask] = self.zc / denom[floor_mask]
-
-        clamped = depth_map.copy()
-        clamped[floor_mask[:, 0], :] = np.minimum(
-            depth_map[floor_mask[:, 0], :],
-            z_floor_max[floor_mask[:, 0], :],
-        )
-        return clamped
+        return np.minimum(depth_map, z_floor_max)
 
     def unproject_depth_map(
         self,
@@ -164,6 +187,7 @@ class CoordinateLifter:
         subsample_step: int = 1,
         min_z: float = -0.02,
         max_z: float = 3.00,
+        is_preclamped: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Back-project calibrated depth pixels to 3D world coordinates with bounds filtering.
@@ -176,26 +200,25 @@ class CoordinateLifter:
         :param subsample_step: Pixel subsampling stride.
         :param min_z: Minimum allowable world Z coordinate (subterranean filter).
         :param max_z: Maximum allowable world Z coordinate (sky/ceiling filter).
+        :param is_preclamped: Whether ground plane was already clamped.
         :return: (points_world_Nx3, colors_rgb_Nx3)
         """
-        clamped_depth = self.clamp_ground_plane(depth_map)
+        clamped_depth = depth_map if is_preclamped else self.clamp_ground_plane(depth_map)
         h, w = clamped_depth.shape[:2]
-        v_grid, u_grid = np.mgrid[0:h:subsample_step, 0:w:subsample_step]
-        z_vals = clamped_depth[v_grid, u_grid]
+        v_grid, u_grid, u_norm, v_norm = self._get_grid(h, w, subsample_step)
+        z_vals = clamped_depth[0:h:subsample_step, 0:w:subsample_step]
 
         valid = (z_vals >= d_min) & (z_vals <= d_max) & np.isfinite(z_vals)
         if not np.any(valid):
             return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)
 
-        u = u_grid[valid].astype(np.float32)
-        v = v_grid[valid].astype(np.float32)
         z = z_vals[valid].astype(np.float32)
 
         # Camera optical coordinates (+X right, +Y down, +Z forward)
-        x_cam = (u - self.cx) * z / self.fx
-        y_cam = (v - self.cy) * z / self.fy
-        z_cam = z
-        pts_cam = np.vstack((x_cam, y_cam, z_cam))  # (3, N)
+        pts_cam = np.empty((3, len(z)), dtype=np.float32)
+        pts_cam[0] = u_norm[valid] * z
+        pts_cam[1] = v_norm[valid] * z
+        pts_cam[2] = z
 
         # Rigid transformation to map frame
         r_mat = t_world_cam_ros[:3, :3]
@@ -221,7 +244,7 @@ class CoordinateLifter:
         voxel_size: float = 0.015,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Fuse points and colors into a uniform spatial voxel grid.
+        Fuse points and colors into a uniform spatial voxel grid using GPU acceleration.
 
         :param points: (N, 3) float32 3D world coordinates.
         :param colors: (N, 3) float32 normalized RGB colors.
@@ -231,27 +254,23 @@ class CoordinateLifter:
         if len(points) == 0:
             return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)
 
-        voxel_indices = np.floor(points / voxel_size).astype(np.int64)
+        import torch
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        pts_t = torch.as_tensor(points, device=device, dtype=torch.float32)
+        cols_t = torch.as_tensor(colors, device=device, dtype=torch.float32)
 
-        # Spatial hash map grouping points by voxel index
-        voxel_dict: Dict[Tuple[int, int, int], List[int]] = {}
-        for idx in range(len(points)):
-            key = (
-                int(voxel_indices[idx, 0]),
-                int(voxel_indices[idx, 1]),
-                int(voxel_indices[idx, 2]),
-            )
-            if key not in voxel_dict:
-                voxel_dict[key] = []
-            voxel_dict[key].append(idx)
+        voxel_coords = torch.floor(pts_t / voxel_size).to(torch.int64)
+        _, inv_idx = torch.unique(voxel_coords, dim=0, return_inverse=True)
+        n_voxels = int(inv_idx.max().item()) + 1
 
-        fused_pts = []
-        fused_cols = []
-        for key, indices in voxel_dict.items():
-            fused_pts.append(np.mean(points[indices], axis=0))
-            fused_cols.append(np.mean(colors[indices], axis=0))
-
-        return (
-            np.asarray(fused_pts, dtype=np.float32),
-            np.asarray(fused_cols, dtype=np.float32),
+        counts = torch.bincount(inv_idx, minlength=n_voxels).unsqueeze(-1).float()
+        sum_pts = torch.zeros(n_voxels, 3, device=device).scatter_add_(
+            0, inv_idx.unsqueeze(-1).expand(-1, 3), pts_t
         )
+        sum_cols = torch.zeros(n_voxels, 3, device=device).scatter_add_(
+            0, inv_idx.unsqueeze(-1).expand(-1, 3), cols_t
+        )
+
+        fused_pts = (sum_pts / counts).cpu().numpy()
+        fused_cols = (sum_cols / counts).cpu().numpy()
+        return fused_pts, fused_cols

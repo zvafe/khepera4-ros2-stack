@@ -174,11 +174,11 @@ def main_cli() -> None:
     )
 
     LOGGER.info("SUCCESS! Reconstruction complete: %s", ply_path)
-    print(f"\n========================================================")
-    print(f" SuperSplat 3DGS Model Ready for Browser Visualization:")
+    print("\n========================================================")
+    print(" SuperSplat 3DGS Model Ready for Browser Visualization:")
     print(f" File: {ply_path}")
-    print(f" Test immediately in: https://superspl.at/editor")
-    print(f"========================================================\n")
+    print(" Test immediately in: https://superspl.at/editor")
+    print("========================================================\n")
 
 
 if __name__ == "__main__":
