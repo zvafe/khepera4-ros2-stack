@@ -17,7 +17,7 @@ khepera_3dgs_node:
     train_on_shutdown: true
     enable_floor_scale: false
     align_supersplat_y_up: true
-    max_height_m: 0.38
+    max_height_m: 3.0
     arena_bounds_x: [-2.55, 2.55]
     arena_bounds_y: [-2.55, 2.55]
 

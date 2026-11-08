@@ -55,6 +55,12 @@ def generate_launch_description() -> LaunchDescription:
         description="Automatically trigger 3DGS training when simulation closes",
     )
 
+    max_height_arg = DeclareLaunchArgument(
+        "max_height_m",
+        default_value="3.0",
+        description="Maximum ceiling / scene height filter in meters",
+    )
+
     # 1. Base Simulation & Mapping Launch (Gazebo Harmonic + TF + Mapper)
     mapping_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(mapping_launch_path),
@@ -79,7 +85,7 @@ def generate_launch_description() -> LaunchDescription:
                 "output_dir": LaunchConfiguration("output_dir"),
                 "num_iterations": LaunchConfiguration("iterations"),
                 "train_on_shutdown": LaunchConfiguration("train_on_shutdown"),
-                "max_height_m": 0.40,
+                "max_height_m": LaunchConfiguration("max_height_m"),
             },
         ],
     )
@@ -91,6 +97,7 @@ def generate_launch_description() -> LaunchDescription:
         output_dir_arg,
         num_iterations_arg,
         train_on_shutdown_arg,
+        max_height_arg,
         mapping_sim_launch,
         khepera_3dgs_node,
     ])

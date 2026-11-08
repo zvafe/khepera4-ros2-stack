@@ -367,19 +367,11 @@ class GsplatTrainer:
         sky_rgb = gt_image[:, :10, :, :].mean(dim=(1, 2), keepdim=True)
         pred_img = raw_pred_img + (1.0 - alphas) * sky_rgb
 
-        # Photometric losses with open-sky exclusion for low-wall simulation
-        if self.max_z <= 0.60:
-            v_rows = torch.arange(height, device=self.device).view(1, height, 1, 1)
-            cy = k_mat[0, 1, 2]
-            valid_rows = (v_rows >= (cy - 10.0)).expand_as(gt_image)
-            l1_loss = F.l1_loss(pred_img[valid_rows], gt_image[valid_rows])
-            valid_mask_ssim = (v_rows >= (cy - 10.0)).permute(0, 3, 1, 2).expand(
-                1, 3, height, width
-            )
-            ssim_val = self.ssim_loss(pred_img, gt_image, mask=valid_mask_ssim)
-        else:
-            l1_loss = F.l1_loss(pred_img, gt_image)
-            ssim_val = self.ssim_loss(pred_img, gt_image)
+        # Photometric losses with dynamic background blending:
+        # Transparent sky rays composite with ambient sky color, preventing black-void
+        # floaters while allowing walls and tall structures to be reconstructed up to full FOV.
+        l1_loss = F.l1_loss(pred_img, gt_image)
+        ssim_val = self.ssim_loss(pred_img, gt_image)
 
         rgb_loss = (1.0 - self.lambda_ssim) * l1_loss + self.lambda_ssim * (1.0 - ssim_val)
 
@@ -390,9 +382,10 @@ class GsplatTrainer:
                 target_depth = gt_depth.squeeze(-1)
             else:
                 target_depth = gt_depth
+            max_d_thresh = 6.00 if self.max_z > 1.0 else 3.50
             valid_mask = (
                 (target_depth > 0.05)
-                & (target_depth <= 3.50)
+                & (target_depth <= max_d_thresh)
                 & torch.isfinite(target_depth)
             )
             # Mask out rays pointing above ceiling bounds (z_world > max_z)

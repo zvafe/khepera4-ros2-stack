@@ -137,18 +137,17 @@ def main_cli() -> None:
         "--max-height",
         type=float,
         default=3.0,
-        help="Maximum ceiling height filter in meters (default 3.0m, set to 0.40m for Gazebo sim)",
+        help="Maximum ceiling height filter in meters (default 3.0m)",
     )
 
     args = parser.parse_args()
 
-    max_h = 0.40 if args.synthetic_test else args.max_height
     pipeline = ReconstructionPipeline(
         output_dir=args.output_dir,
         checkpoint_path=args.checkpoint if args.checkpoint else None,
         voxel_size_m=args.voxel_size,
         num_iterations=args.iterations,
-        max_height_m=max_h,
+        max_height_m=args.max_height,
     )
 
     if args.bag:
