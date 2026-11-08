@@ -249,6 +249,8 @@ class GsplatTrainer:
         self.prune_thresh = float(prune_opacity_thresh)
         self.min_z = float(min_z)
         self.max_z = float(max_z)
+        self.lr_means_init = float(lr_means)
+        self.lr_means_final = float(lr_means) * 0.01
 
         # Gradient accumulator for adaptive density control
         self._grad_accum = torch.zeros(self.model.num_gaussians, device=self.device)
@@ -267,6 +269,35 @@ class GsplatTrainer:
 
         # Preallocated, cached separable SSIM module on device
         self.ssim_loss = SeparableSSIM(channel=3).to(self.device)
+
+    def update_learning_rates(self, step: int, max_steps: int) -> float:
+        """
+        Update learning rate for means according to exponential schedule (Splatfacto).
+
+        :param step: Current training iteration index.
+        :param max_steps: Total training iterations.
+        :return: Updated means learning rate.
+        """
+        if max_steps <= 0:
+            return self.lr_means_init
+        ratio = max(0.0, min(1.0, float(step) / float(max_steps)))
+        cur_lr = self.lr_means_init * (self.lr_means_final / self.lr_means_init) ** ratio
+        for group in self.optimizer.param_groups:
+            if group.get("name") == "means":
+                group["lr"] = cur_lr
+        return cur_lr
+
+    def reset_opacities(self, reset_val: float = 0.01) -> None:
+        """
+        Force all Gaussian opacities to a low logit value to eliminate floaters (Splatfacto).
+
+        Real surfaces observed across views rapidly regain high opacity, while
+        transient ceiling floaters in free space fail to recover and are pruned.
+        :param reset_val: Target reset opacity value in [0, 1] (default 0.01 = 1%).
+        """
+        with torch.no_grad():
+            logit_val = float(math.log(reset_val / (1.0 - reset_val)))
+            self.model.opacities.data.fill_(logit_val)
 
     def train_step(
         self,
@@ -369,17 +400,21 @@ class GsplatTrainer:
     def prune_low_opacity(
         self,
         prune_opacity_thresh: Optional[float] = None,
-        max_scale_thresh: float = 0.12,
+        max_scale_thresh: float = 0.08,
         min_z: Optional[float] = None,
         max_z: Optional[float] = None,
+        x_bounds: Optional[Tuple[float, float]] = None,
+        y_bounds: Optional[Tuple[float, float]] = None,
     ) -> int:
         """
-        Prune Gaussians with low opacity, excessive scale, or outside vertical bounds.
+        Prune Gaussians with low opacity, excessive scale, or outside spatial bounds (AABB).
 
         :param prune_opacity_thresh: Custom opacity cutoff (default self.prune_thresh).
         :param max_scale_thresh: Max allowable scale dimension in meters.
         :param min_z: Minimum allowable map Z coordinate (default self.min_z).
         :param max_z: Maximum allowable map Z coordinate (default self.max_z).
+        :param x_bounds: Optional (min_x, max_x) physical boundary filter.
+        :param y_bounds: Optional (min_y, max_y) physical boundary filter.
         :return: Number of pruned Gaussians.
         """
         thresh = float(prune_opacity_thresh) if prune_opacity_thresh else self.prune_thresh
@@ -389,7 +424,8 @@ class GsplatTrainer:
             cur_opacities = torch.sigmoid(self.model.opacities)
             cur_scales = torch.exp(self.model.scales)
             max_scale, _ = torch.max(cur_scales, dim=-1)
-            z_pos = self.model.means[:, 2]
+            means = self.model.means
+            z_pos = means[:, 2]
 
             keep_mask = (
                 (cur_opacities >= thresh)
@@ -397,6 +433,11 @@ class GsplatTrainer:
                 & (z_pos >= z_min)
                 & (z_pos <= z_max)
             )
+            if x_bounds is not None:
+                keep_mask = keep_mask & (means[:, 0] >= x_bounds[0]) & (means[:, 0] <= x_bounds[1])
+            if y_bounds is not None:
+                keep_mask = keep_mask & (means[:, 1] >= y_bounds[0]) & (means[:, 1] <= y_bounds[1])
+
             n_pruned = int((~keep_mask).sum().item())
 
             if n_pruned > 0 and keep_mask.sum() > 50:

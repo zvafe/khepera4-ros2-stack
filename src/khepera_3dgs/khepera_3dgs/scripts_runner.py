@@ -128,6 +128,12 @@ def main_cli() -> None:
         help="Run verification test on synthetic multi-view trajectory",
     )
     parser.add_argument(
+        "--num-keyframes",
+        type=int,
+        default=24,
+        help="Number of viewpoints to synthesize (default: 24)",
+    )
+    parser.add_argument(
         "--max-height",
         type=float,
         default=3.0,

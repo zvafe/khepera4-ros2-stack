@@ -268,6 +268,9 @@ class ReconstructionPipeline:
 
         # Training loop
         for step in range(1, total_iters + 1):
+            # 1. Splatfacto Exponential LR Decay for Centroids
+            trainer.update_learning_rates(step, total_iters)
+
             kf_idx = step % n_kf
             gt_img = gt_tensors[kf_idx]
             gt_d = depth_tensors[kf_idx]
@@ -282,7 +285,17 @@ class ReconstructionPipeline:
                 gt_depth=gt_d,
             )
 
-            # Adaptive density control: clone/split every 250 steps up to total_iters - 300
+            # 2. Splatfacto Anti-Floater Opacity Reset (clears transient ceiling/sky floaters)
+            if (
+                step in (int(total_iters * 0.3), int(total_iters * 0.6))
+                and step <= total_iters - 300
+            ):
+                trainer.reset_opacities(reset_val=0.01)
+                _report(
+                    f"Step {step}: Splatfacto Opacity Reset to 0.01 (purging floater clouds)"
+                )
+
+            # 3. Adaptive density control: clone/split every 250 steps up to total_iters - 300
             if step % 250 == 0 and step <= total_iters - 300:
                 n_clone, n_split = trainer.densify_and_clone_or_split(
                     max_scale_thresh=0.03, max_gaussians=250000
@@ -293,12 +306,15 @@ class ReconstructionPipeline:
                         f"(total: {gaussian_model.num_gaussians} Gaussians)"
                     )
 
-            # Prune transparent splats every 200 iterations
-            if step % 200 == 0:
-                n_pruned = trainer.prune_low_opacity()
+            # 4. Prune transparent and out-of-bounds splats every 150 iterations
+            if step % 150 == 0:
+                n_pruned = trainer.prune_low_opacity(
+                    max_scale_thresh=0.08,
+                    max_z=self.max_height,
+                )
                 if n_pruned > 0:
                     _report(
-                        f"Step {step}: Pruned {n_pruned} low-opacity Gaussians "
+                        f"Step {step}: Pruned {n_pruned} low-opacity/floater Gaussians "
                         f"(current total: {gaussian_model.num_gaussians})"
                     )
 
@@ -314,6 +330,15 @@ class ReconstructionPipeline:
                     f"Loss: {loss:.4f} | Depth: {d_loss:.4f} | "
                     f"Splats: {gaussian_model.num_gaussians}"
                 )
+
+        # Final cleanup prune of low opacity and boundary floaters
+        final_pruned = trainer.prune_low_opacity(
+            prune_opacity_thresh=0.08,
+            max_scale_thresh=0.08,
+            max_z=self.max_height,
+        )
+        if final_pruned > 0:
+            LOGGER.info("Final cleanup pruned %d out-of-bounds/floater Gaussians", final_pruned)
 
         # Phase 5: SuperSplat PLY Export
         _report("[Phase 4/4] Exporting model to SuperSplat-compatible binary PLY...")
