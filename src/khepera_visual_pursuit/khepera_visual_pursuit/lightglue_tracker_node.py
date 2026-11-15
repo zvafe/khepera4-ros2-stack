@@ -251,23 +251,58 @@ class LightGlueTrackerNode(Node):
             self.confidence_pub.publish(Float32(data=0.0))
             return
 
-        # Attempt high-frequency feature tracking if locked
-        if self.has_target_lock:
-            output = self.tracker.track(self.latest_frame)
-            if output.is_tracked:
-                self._last_confidence = output.confidence
-                poly_msg = self._build_polygon_message(output.polygon_points)
-                self.keypoints_pub.publish(poly_msg)
-                self.confidence_pub.publish(Float32(data=output.confidence))
-                return
-
-        # Fallback to verified candidate ROI vertices if present and recent
         now = (
             float(self.get_clock().now().nanoseconds * 1e-9)
             if hasattr(self, "get_clock")
             else float(time.time())
         )
-        if self.latest_verified_roi is not None and (now - self.latest_roi_time) < 1.0:
+
+        # In Mode A (semantic description), prefer detector verified candidate ROI
+        if (
+            self.pursuit_mode != "template"
+            and self.latest_verified_roi is not None
+            and (now - self.latest_roi_time) < 1.5
+        ):
+            c_x = float(self.latest_verified_roi.bbox.center.position.x)
+            c_y = float(self.latest_verified_roi.bbox.center.position.y)
+            s_x = float(self.latest_verified_roi.bbox.size_x)
+            s_y = float(self.latest_verified_roi.bbox.size_y)
+            half_w = s_x / 2.0
+            half_h = s_y / 2.0
+            corners = (
+                (c_x - half_w, c_y - half_h),
+                (c_x + half_w, c_y - half_h),
+                (c_x + half_w, c_y + half_h),
+                (c_x - half_w, c_y + half_h),
+            )
+            score = (
+                float(self.latest_verified_roi.results[0].hypothesis.score)
+                if self.latest_verified_roi.results
+                else 1.0
+            )
+            self._last_confidence = score
+            poly_msg = self._build_polygon_message(corners)
+            self.keypoints_pub.publish(poly_msg)
+            self.confidence_pub.publish(Float32(data=score))
+            return
+
+        # Attempt high-frequency feature tracking if locked
+        if self.has_target_lock:
+            output = self.tracker.track(self.latest_frame)
+            if output.is_tracked:
+                xs = [p[0] for p in output.polygon_points]
+                ys = [p[1] for p in output.polygon_points]
+                w = max(xs) - min(xs)
+                h = max(ys) - min(ys)
+                if w >= 20.0 and h >= 20.0:
+                    self._last_confidence = output.confidence
+                    poly_msg = self._build_polygon_message(output.polygon_points)
+                    self.keypoints_pub.publish(poly_msg)
+                    self.confidence_pub.publish(Float32(data=output.confidence))
+                    return
+
+        # Fallback to verified candidate ROI vertices if present and recent
+        if self.latest_verified_roi is not None and (now - self.latest_roi_time) < 1.5:
             c_x = float(self.latest_verified_roi.bbox.center.position.x)
             c_y = float(self.latest_verified_roi.bbox.center.position.y)
             s_x = float(self.latest_verified_roi.bbox.size_x)

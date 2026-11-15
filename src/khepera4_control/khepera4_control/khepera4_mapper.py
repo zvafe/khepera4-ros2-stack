@@ -1858,10 +1858,13 @@ class Khepera4Mapper(Node):
         self.surface_grid = np.full((self.height, self.width), -1, dtype=np.int8)
         self.visual_grid = np.full((self.height, self.width, 3), 200, dtype=np.uint8)
         self.has_visual_map = False
-        if self.has_odom:
-            self.robot_path = [(self.robot_x, self.robot_y)]
-        else:
-            self.robot_path = []
+        self.last_odom_x = None
+        self.last_odom_y = None
+        self.last_odom_yaw = None
+        self.robot_x = 0.0
+        self.robot_y = 0.0
+        self.robot_yaw = 0.0
+        self.robot_path = [(0.0, 0.0)]
 
         now = self.get_clock().now().to_msg()
         self._publish_grid(self.map_pub, self._build_occupancy_grid_data(), now)

@@ -21,6 +21,8 @@ from khepera_visual_pursuit.yolo_world_engine import (
     NEGATIVE_CLASSES,
     BoundingBox,
     YoloWorldEngine,
+    _is_featureless_surface,
+    calculate_weighted_semantic_score,
 )
 
 
@@ -141,3 +143,35 @@ def test_yolo_oom_fallback() -> None:
     assert isinstance(proposals, tuple)
     assert engine.device == "cpu"
     assert engine._is_half is False
+
+
+def test_is_featureless_surface_filters_grey_wall_and_accepts_red_target() -> None:
+    """Verify featureless surface filter rejects blank grey walls but accepts colored boxes."""
+    # Blank grey wall: low variance, low std, no color saturation -> featureless
+    grey_wall = np.full((64, 64, 3), 128, dtype=np.uint8)
+    assert _is_featureless_surface(grey_wall) is True
+
+    # Solid red target in Gazebo: low variance, high color saturation -> NOT featureless
+    red_box = np.full((64, 64, 3), (0, 0, 220), dtype=np.uint8)
+    assert _is_featureless_surface(red_box) is False
+
+    # Uniform solid blue target: NOT featureless
+    blue_target = np.full((64, 64, 3), (220, 0, 0), dtype=np.uint8)
+    assert _is_featureless_surface(blue_target) is False
+
+
+def test_calculate_weighted_semantic_score_solid_red_box() -> None:
+    """Ensure solid-colored red box in simulation is not discarded with 0 score."""
+    box = BoundingBox(
+        center_x=160.0,
+        center_y=120.0,
+        size_x=60.0,
+        size_y=60.0,
+        confidence=0.85,
+        class_name="box",
+    )
+    red_crop = np.full((60, 60, 3), (0, 0, 220), dtype=np.uint8)
+    score = calculate_weighted_semantic_score(
+        box, target_name="red box", target_desc="", crop_bgr=red_crop
+    )
+    assert score >= 0.50

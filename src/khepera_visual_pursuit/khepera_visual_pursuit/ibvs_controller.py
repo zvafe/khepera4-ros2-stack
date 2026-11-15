@@ -80,8 +80,8 @@ class IBVSController:
         """
         norm_x, area_frac, confidence = target_state
 
-        # Stop 5 cm in front of the target
-        if obstacle_distance <= self.gains.obstacle_stop_distance:
+        # Stop 5 cm in front of the target (target 5.0 ± 1.0 cm, threshold 0.051 m)
+        if obstacle_distance <= (self.gains.obstacle_stop_distance + 0.001):
             return self._build_emergency_stop_command()
 
         if confidence < self.gains.min_confidence:
@@ -92,7 +92,7 @@ class IBVSController:
         # Reactive obstacle avoidance: repulsive field from lateral obstacles
         w_repulse = 0.0
         avoid_dist = 0.35
-        if obstacle_left < avoid_dist or obstacle_right < avoid_dist:
+        if obstacle_distance > 0.20 and (obstacle_left < avoid_dist or obstacle_right < avoid_dist):
             w_left = max(0.0, (avoid_dist - obstacle_left) / avoid_dist)
             w_right = max(0.0, (avoid_dist - obstacle_right) / avoid_dist)
             w_repulse = (w_right - w_left) * 1.2
@@ -106,12 +106,10 @@ class IBVSController:
         linear_v = cmd.linear_x
         slow_dist = 0.30
         if obstacle_distance < slow_dist:
-            slow_factor = max(
-                0.0,
-                (obstacle_distance - self.gains.obstacle_stop_distance)
-                / max(1e-4, slow_dist - self.gains.obstacle_stop_distance)
-            )
-            linear_v = linear_v * slow_factor
+            dist_remaining = obstacle_distance - self.gains.obstacle_stop_distance
+            ratio = max(0.0, dist_remaining / max(1e-4, slow_dist - self.gains.obstacle_stop_distance))
+            # Modulate speed towards terminal creep velocity (0.025 m/s) down to 5.0 cm stop
+            linear_v = max(0.025, min(linear_v, 0.06 * ratio + 0.025))
 
         return TwistCommand(
             linear_x=float(linear_v),

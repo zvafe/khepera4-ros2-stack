@@ -10,9 +10,10 @@ object_detector_verifier_node:
     target_image_path: ""
     device: "auto"
     detection_rate_hz: 5.0
-    tau_verify: 0.70
+    tau_verify: 0.55
     tau_margin: 0.08
     classes:
+      - "red box"
       - "target object"
       - "cylinder"
       - "box"
@@ -34,7 +35,7 @@ lightglue_tracker_node:
 
 ibvs_controller_node:
   ros__parameters:
-    auto_start: false
+    auto_start: true
     keypoints_topic: "/perception/target_keypoints"
     confidence_topic: "/perception/tracking_confidence"
     scan_topic: "/khepera4/scan"
@@ -44,7 +45,7 @@ ibvs_controller_node:
     k_omega: 1.2
     v_max: 0.15
     omega_max: 0.8
-    desired_area_fraction: 0.15
+    desired_area_fraction: 0.85
     min_confidence: 0.35
     reverse_sweep_omega: 0.2
     obstacle_stop_distance: 0.05

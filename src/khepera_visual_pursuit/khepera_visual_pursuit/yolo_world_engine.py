@@ -105,6 +105,25 @@ def _is_featureless_surface(crop_bgr: np.ndarray) -> bool:
     """Identify uniform featureless background crops (e.g. walls, floors)."""
     if crop_bgr is None or crop_bgr.size == 0:
         return True
+
+    # If the crop contains a distinct non-grey color (e.g. red, blue, green with color
+    # fraction >= 0.05), it is a colored object rather than a featureless wall/floor.
+    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    total_pixels = max(1, crop_bgr.shape[0] * crop_bgr.shape[1])
+
+    # Check known color categories from COLOR_MAP
+    for ranges in COLOR_MAP.values():
+        mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lb, ub in ranges:
+            mask |= cv2.inRange(hsv, lb, ub)
+        if float(np.count_nonzero(mask)) / total_pixels >= 0.05:
+            return False
+
+    # Also check generic saturated non-grey hue (S >= 60, V >= 40)
+    sat_mask = cv2.inRange(hsv, (0, 60, 40), (180, 255, 255))
+    if float(np.count_nonzero(sat_mask)) / total_pixels >= 0.05:
+        return False
+
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     color_std = float(np.std(crop_bgr))
@@ -164,7 +183,7 @@ def calculate_weighted_semantic_score(
         for lb, ub in COLOR_MAP[target_color]:
             mask |= cv2.inRange(hsv_crop, lb, ub)
         frac = float(np.count_nonzero(mask)) / max(1, crop_bgr.shape[0] * crop_bgr.shape[1])
-        if frac < 0.08:
+        if frac < 0.05:
             s_name *= max(0.05, frac * 5.0)
 
     s_name = float(np.clip(s_name * (0.50 + 0.50 * box.confidence), 0.0, 1.0))
@@ -375,7 +394,9 @@ class YoloWorldEngine:
             except Exception as exc:
                 logger.warning("Failed to set open-vocab classes on model: %s", exc)
 
-    def generate_proposals(self, image_bgr: np.ndarray) -> Tuple[BoundingBox, ...]:
+    def generate_proposals(
+        self, image_bgr: np.ndarray, target_name: Optional[str] = None
+    ) -> Tuple[BoundingBox, ...]:
         """Generate candidate bounding box proposals from incoming image."""
         if (
             image_bgr is None

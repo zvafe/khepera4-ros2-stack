@@ -216,6 +216,11 @@ class ReactiveExplorer(Node):
         )
         self.pursuit_active = False
         self.target_in_sight = False
+        self.target_lost_time = None
+        self.target_stopped = False
+        self.stop_sub = self.create_subscription(
+            Bool, '/target_found_and_stopped', self.target_stopped_callback, 10
+        )
         self.target_status_sub = self.create_subscription(
             Bool, '/perception/target_status', self.target_status_callback, 10
         )
@@ -325,45 +330,72 @@ class ReactiveExplorer(Node):
         self.publish_thought(thought)
         return SetParametersResult(successful=True)
 
+    def target_stopped_callback(self, msg: Bool) -> None:
+        """Halt exploration permanently when target is reached and stopped."""
+        if msg.data:
+            self.target_stopped = True
+            self.get_logger().info(
+                'Target reached and terminal stop signaled! Halting explorer.'
+            )
+            self.publish_thought(
+                '🛑 Target reached and terminal stop signaled. Exploration permanently halted.'
+            )
+            self._set_enabled(False, 'topic /target_found_and_stopped')
+            self._stop_robot()
+        else:
+            self.target_stopped = False
+
     def pursuit_enable_callback(self, msg: Bool) -> None:
         """Handle pursuit active toggles to enable or suspend active exploration."""
         was_active = self.pursuit_active
         self.pursuit_active = bool(msg.data)
         if self.pursuit_active and not was_active:
+            if not self.target_stopped:
+                self.target_in_sight = False
+                self.get_logger().info(
+                    'Visual pursuit enabled. Starting active exploration search for target.'
+                )
+                self.publish_thought(
+                    '🚀 Pursuit enabled: Starting fast active exploration search for target.'
+                )
+                self._set_enabled(True, 'topic /pursuit/enable')
+        elif not self.pursuit_active:
             self.target_in_sight = False
-            self.get_logger().info(
-                'Visual pursuit enabled. Starting active exploration search for target.'
-            )
-            self.publish_thought(
-                '🚀 Pursuit enabled: Starting fast active exploration search for target.'
-            )
-            self._set_enabled(True, 'topic /pursuit/enable')
-        elif not self.pursuit_active and was_active:
-            self.target_in_sight = False
-            self.get_logger().info(
-                'Visual pursuit disengaged. Halting autonomous exploration.'
-            )
-            self.publish_thought('🛑 Pursuit disengaged. Halting exploration.')
+            if was_active:
+                self.get_logger().info(
+                    'Visual pursuit disengaged. Halting autonomous exploration.'
+                )
+                self.publish_thought('🛑 Pursuit disengaged. Halting exploration.')
             self._set_enabled(False, 'topic /pursuit/enable')
+            self._stop_robot()
 
     def target_status_callback(self, msg: Bool) -> None:
         """Handle target detection status to yield or resume autonomous exploration."""
         if not self.pursuit_active:
             self.target_in_sight = False
+            self.target_lost_time = None
             return
-        was_in_sight = self.target_in_sight
-        self.target_in_sight = bool(msg.data)
-        if self.target_in_sight and not was_in_sight:
-            self.get_logger().info(
-                'Target acquired in sight! Halting explorer and yielding to IBVS pursuit.'
-            )
-            self.publish_thought('🎯 Target in sight! Yielding control to visual pursuit.')
-            self._stop_robot()
-        elif not self.target_in_sight and was_in_sight:
-            self.get_logger().info(
-                'Target lost from visual sight. Resuming active exploration search.'
-            )
-            self.publish_thought('🔍 Target out of sight. Resuming active exploration search.')
+        is_target = bool(msg.data)
+        if is_target:
+            self.target_lost_time = None
+            if not self.target_in_sight:
+                self.target_in_sight = True
+                self.get_logger().info(
+                    'Target acquired in sight! Halting explorer and yielding to IBVS pursuit.'
+                )
+                self.publish_thought('🎯 Target in sight! Yielding control to visual pursuit.')
+                self._stop_robot()
+        else:
+            now = self._get_current_time()
+            if self.target_lost_time is None:
+                self.target_lost_time = now
+            elif (now - self.target_lost_time) > 4.0:
+                if self.target_in_sight:
+                    self.target_in_sight = False
+                    self.get_logger().info(
+                        'Target lost from visual sight for > 4.0s. Resuming active exploration search.'
+                    )
+                    self.publish_thought('🔍 Target out of sight. Resuming active exploration search.')
 
     def publish_thought(self, text: str, force: bool = False) -> None:
         """Publish cognitive reasoning log for dashboard telemetry."""
@@ -1083,6 +1115,9 @@ class ReactiveExplorer(Node):
 
     def _set_enabled(self, state: bool, source: str):
         """Update enabled state and log change."""
+        if state and self.target_stopped:
+            self.get_logger().info('Cannot enable explorer: target already reached and stopped.')
+            return
         if self.enabled != state:
             self.enabled = state
             self.get_logger().info(
@@ -1301,7 +1336,7 @@ class ReactiveExplorer(Node):
 
     def control_loop(self):
         """Execute high-frequency reactive steering loop."""
-        if not self.enabled:
+        if self.target_stopped or not self.enabled:
             return
 
         # When visual pursuit is active and target is in sight, yield control to IBVS controller

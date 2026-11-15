@@ -43,6 +43,7 @@ from khepera_visual_pursuit.ros_compat import (
     Twist,
     rclpy,
 )
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ DEFAULT_CONFIDENCE_TOPIC = "/perception/tracking_confidence"
 DEFAULT_SCAN_TOPIC = "/khepera4/scan"
 DEFAULT_CMD_VEL_TOPIC = "/cmd_vel"
 DEFAULT_STATUS_TOPIC = "/perception/ibvs_status"
+DEFAULT_STOP_TOPIC = "/target_found_and_stopped"
 DEFAULT_CONTROL_RATE_HZ: float = 25.0
 DEFAULT_IMAGE_WIDTH: float = 640.0
 DEFAULT_IMAGE_HEIGHT: float = 480.0
@@ -75,6 +77,7 @@ class IBVSControllerNode(Node):
         self.latest_obstacle_left: float = 10.0
         self.latest_obstacle_right: float = 10.0
         self.has_active_target: bool = False
+        self.target_reached_and_stopped: bool = False
         self.pursuit_enabled: bool = bool(self.get_parameter("auto_start").value)
 
         self._init_subscribers_and_publishers()
@@ -135,16 +138,39 @@ class IBVSControllerNode(Node):
             LaserScan, scan_topic, self._on_laser_scan, 10
         )
 
+        qos_latched = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         self.cmd_vel_pub = self.create_publisher(Twist, cmd_topic, 10)
         self.status_pub = self.create_publisher(Bool, DEFAULT_STATUS_TOPIC, 10)
+        self.stop_pub = self.create_publisher(Bool, DEFAULT_STOP_TOPIC, 10)
+        self.pursuit_enable_pub = self.create_publisher(Bool, "/pursuit/enable", 10)
+        self.explorer_enable_pub = self.create_publisher(
+            Bool, "/explorer/enable", qos_latched
+        )
         self.enable_sub = self.create_subscription(
             Bool, "/pursuit/enable", self._on_pursuit_enable, 10
         )
+        self.stop_sub = self.create_subscription(
+            Bool, DEFAULT_STOP_TOPIC, self._on_stop_signal_message, 10
+        )
+
+    def _on_stop_signal_message(self, msg: Bool) -> None:
+        """Reset terminal stop state when False is received on stop topic."""
+        if not msg.data:
+            self.target_reached_and_stopped = False
+            self.pursuit_enabled = True
 
     def _on_pursuit_enable(self, msg: Bool) -> None:
         """Dynamically toggle pursuit control loop execution."""
         self.pursuit_enabled = bool(msg.data)
-        if not self.pursuit_enabled:
+        self.get_logger().info(f"Pursuit enable set to: {self.pursuit_enabled}")
+        if self.pursuit_enabled:
+            self.target_reached_and_stopped = False
+        else:
             self.has_active_target = False
             self.controller.reset()
             self.cmd_vel_pub.publish(Twist())
@@ -161,7 +187,10 @@ class IBVSControllerNode(Node):
         self.latest_norm_x = norm_x
         self.latest_norm_y = norm_y
         self.latest_area_frac = area_frac
+        was_active = self.has_active_target
         self.has_active_target = True
+        if not was_active and self.cooperate_with_explorer:
+            self.explorer_enable_pub.publish(Bool(data=False))
 
     def _calculate_centroid_and_area(
         self,
@@ -231,6 +260,9 @@ class IBVSControllerNode(Node):
 
     def _on_control_cycle(self) -> None:
         """Generate kinematic command and publish to cmd_vel at control loop rate."""
+        if self.target_reached_and_stopped:
+            return
+
         if not self.pursuit_enabled:
             return
 
@@ -249,6 +281,21 @@ class IBVSControllerNode(Node):
             self.latest_obstacle_left,
             self.latest_obstacle_right,
         )
+
+        if cmd.is_emergency_stop:
+            self.target_reached_and_stopped = True
+            self.pursuit_enabled = False
+            self.has_active_target = False
+            self.controller.reset()
+            self.stop_pub.publish(Bool(data=True))
+            self.pursuit_enable_pub.publish(Bool(data=False))
+            self.explorer_enable_pub.publish(Bool(data=False))
+            self.cmd_vel_pub.publish(Twist())
+            self.status_pub.publish(Bool(data=False))
+            self.get_logger().info(
+                f"🎯 [TERMINAL STOP] Target reached! Standoff: {self.latest_obstacle_distance*100:.1f} cm"
+            )
+            return
 
         twist_msg = Twist()
         twist_msg.linear.x = float(cmd.linear_x)
