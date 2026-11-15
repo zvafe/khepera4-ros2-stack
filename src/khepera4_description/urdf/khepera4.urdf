@@ -47,6 +47,54 @@
   </joint>
 
   <!-- ==================================================================== -->
+  <!-- Visual Identification Top Hat & Role Coordinate Frame                -->
+  <!-- Cobalt Blue Top Hat with White Decorative Ring for High-Contrast RViz-->
+  <!-- ==================================================================== -->
+  <link name="top_hat">
+    <inertial>
+      <mass value="0.008"/>
+      <origin xyz="0 0 0.012" rpy="0 0 0"/>
+      <inertia ixx="0.000002" ixy="0" ixz="0" iyy="0.000002" iyz="0" izz="0.000003"/>
+    </inertial>
+    <!-- Hat Brim (Wide base) -->
+    <visual name="hat_brim">
+      <origin xyz="0 0 0.002" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.036" length="0.004"/>
+      </geometry>
+      <material name="hat_mat_cobalt">
+        <color rgba="0.10 0.45 0.90 1.0"/>
+      </material>
+    </visual>
+    <!-- Hat Crown (Tall cylindrical top) -->
+    <visual name="hat_crown">
+      <origin xyz="0 0 0.014" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.024" length="0.020"/>
+      </geometry>
+      <material name="hat_mat_cobalt">
+        <color rgba="0.10 0.45 0.90 1.0"/>
+      </material>
+    </visual>
+    <!-- Hat Band (White decorative ring around crown) -->
+    <visual name="hat_band">
+      <origin xyz="0 0 0.006" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.025" length="0.004"/>
+      </geometry>
+      <material name="hat_band_white">
+        <color rgba="1.0 1.0 1.0 0.95"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="top_hat_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="top_hat"/>
+    <origin xyz="0 0 0.0538" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================================================================== -->
   <!-- Left Wheel (r = 0.021m, track gauge L = 0.1054m -> Y = +0.0527m)     -->
   <!-- ==================================================================== -->
   <link name="left_wheel">
@@ -265,7 +313,7 @@
           <near>0.05</near>
           <far>10.0</far>
         </clip>
-        <optical_frame_id>camera_optical_frame</optical_frame_id>
+        <optical_frame_id>camera_link</optical_frame_id>
       </camera>
       <topic>/camera/image_raw</topic>
     </sensor>
@@ -434,7 +482,7 @@
   <!-- ==================================================================== -->
   <gazebo reference="ground_ir_0_link">
     <sensor name="khepera4_ground_ir_0" type="gpu_lidar">
-      <always_on>1</always_on><update_rate>100</update_rate>
+      <always_on>1</always_on><update_rate>20</update_rate>
       <topic>/khepera4/ground_ir_0/scan</topic>
       <ray>
         <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
@@ -445,7 +493,7 @@
 
   <gazebo reference="ground_ir_1_link">
     <sensor name="khepera4_ground_ir_1" type="gpu_lidar">
-      <always_on>1</always_on><update_rate>100</update_rate>
+      <always_on>1</always_on><update_rate>20</update_rate>
       <topic>/khepera4/ground_ir_1/scan</topic>
       <ray>
         <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
@@ -456,7 +504,7 @@
 
   <gazebo reference="ground_ir_2_link">
     <sensor name="khepera4_ground_ir_2" type="gpu_lidar">
-      <always_on>1</always_on><update_rate>100</update_rate>
+      <always_on>1</always_on><update_rate>20</update_rate>
       <topic>/khepera4/ground_ir_2/scan</topic>
       <ray>
         <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>
@@ -467,7 +515,7 @@
 
   <gazebo reference="ground_ir_3_link">
     <sensor name="khepera4_ground_ir_3" type="gpu_lidar">
-      <always_on>1</always_on><update_rate>100</update_rate>
+      <always_on>1</always_on><update_rate>20</update_rate>
       <topic>/khepera4/ground_ir_3/scan</topic>
       <ray>
         <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal></scan>

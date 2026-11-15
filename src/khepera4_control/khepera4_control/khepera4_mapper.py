@@ -604,18 +604,21 @@ class Khepera4Mapper(Node):
         self.fused_odom_pub.publish(fused)
 
         if self.publish_odom_tf:
-            t_odom = TransformStamped()
-            t_odom.header.stamp = stamp
-            t_odom.header.frame_id = 'odom'
-            t_odom.child_frame_id = self.robot_frame
-            t_odom.transform.translation.x = float(self.robot_x)
-            t_odom.transform.translation.y = float(self.robot_y)
-            t_odom.transform.translation.z = 0.0
-            t_odom.transform.rotation.x = qx
-            t_odom.transform.rotation.y = qy
-            t_odom.transform.rotation.z = qz
-            t_odom.transform.rotation.w = qw
-            self.tf_broadcaster.sendTransform(t_odom)
+            stamp_nanos = stamp.sec * 1_000_000_000 + stamp.nanosec
+            if not hasattr(self, '_last_odom_tf_stamp_nanos') or stamp_nanos > self._last_odom_tf_stamp_nanos:
+                self._last_odom_tf_stamp_nanos = stamp_nanos
+                t_odom = TransformStamped()
+                t_odom.header.stamp = stamp
+                t_odom.header.frame_id = 'odom'
+                t_odom.child_frame_id = self.robot_frame
+                t_odom.transform.translation.x = float(self.robot_x)
+                t_odom.transform.translation.y = float(self.robot_y)
+                t_odom.transform.translation.z = 0.0
+                t_odom.transform.rotation.x = qx
+                t_odom.transform.rotation.y = qy
+                t_odom.transform.rotation.z = qz
+                t_odom.transform.rotation.w = qw
+                self.tf_broadcaster.sendTransform(t_odom)
 
         self._broadcast_map_tf(stamp)
 
@@ -630,6 +633,11 @@ class Khepera4Mapper(Node):
         """
         if not self.publish_map_tf:
             return
+
+        stamp_nanos = stamp.sec * 1_000_000_000 + stamp.nanosec
+        if hasattr(self, '_last_map_tf_stamp_nanos') and stamp_nanos <= self._last_map_tf_stamp_nanos:
+            return
+        self._last_map_tf_stamp_nanos = stamp_nanos
         ox = self.last_odom_x if self.last_odom_x is not None else self.robot_x
         oy = self.last_odom_y if self.last_odom_y is not None else self.robot_y
         oyaw = self.last_odom_yaw if self.last_odom_yaw is not None else self.robot_yaw
@@ -658,6 +666,7 @@ class Khepera4Mapper(Node):
 
     def odom_callback(self, msg: Odometry):
         """Update robot pose and path history from wheel odometry fused with IMU heading."""
+        self.last_odom_stamp = msg.header.stamp
         odom_x = msg.pose.pose.position.x
         odom_y = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
@@ -1402,9 +1411,13 @@ class Khepera4Mapper(Node):
             if not has_stable_imu:
                 self.robot_yaw = target_yaw
 
-            # Broadcast updated TF immediately
-            now_stamp = self.get_clock().now().to_msg()
-            self._broadcast_map_tf(now_stamp)
+            # Broadcast updated TF using odometry timestamp to maintain sync
+            stamp = (
+                self.last_odom_stamp
+                if hasattr(self, 'last_odom_stamp') and self.last_odom_stamp is not None
+                else self.get_clock().now().to_msg()
+            )
+            self._broadcast_map_tf(stamp)
             return True
         return False
 

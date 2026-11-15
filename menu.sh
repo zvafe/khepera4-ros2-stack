@@ -39,7 +39,7 @@ setup_environment() {
         # shellcheck disable=SC1091
         source /opt/ros/jazzy/setup.bash
         cd "${WS_ROOT}"
-        colcon build --symlink-install --packages-select khepera4_description khepera4_control hybrid_nav_interfaces openfrontier_ros semantic_reasoner activesplat_ros khepera_hybrid_nav khepera_3dgs
+        colcon build --symlink-install --packages-select khepera4_description khepera4_control hybrid_nav_interfaces openfrontier_ros semantic_reasoner activesplat_ros khepera_hybrid_nav khepera_3dgs khepera_visual_pursuit
         # shellcheck disable=SC1091
         source "${WS_ROOT}/install/setup.bash"
         echo -e "${GREEN}✓ Workspace built and sourced successfully.${NC}"
@@ -95,9 +95,31 @@ dispatch_ros2_cmd() {
             source "${WS_ROOT}/install/setup.bash"
         fi
         export GZ_SIM_RESOURCE_PATH="${WS_ROOT}/src/khepera4_description:${WS_ROOT}/install/khepera4_description/share:${GZ_SIM_RESOURCE_PATH}"
-        export QT_QPA_PLATFORM=xcb
+        local xw_pid=""
+        if [ -n "${WAYLAND_DISPLAY}" ]; then
+            if [ -z "${DISPLAY}" ]; then
+                export DISPLAY=:1
+            fi
+            # If no functional X11 display is active, start a seamless rootless Xwayland helper for GLX/RViz2
+            if ! xset q >/dev/null 2>&1 && command -v Xwayland >/dev/null 2>&1; then
+                rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+                Xwayland :1 -rootless -ac >/dev/null 2>&1 &
+                xw_pid=$!
+                export DISPLAY=:1
+                sleep 0.8
+            fi
+        fi
+        export QT_QPA_PLATFORM="wayland;xcb"
         export QT_XCB_GL_INTEGRATION=glx
-        eval "${cmd}"
+        eval "${cmd}" || true
+
+        if [ -n "${xw_pid}" ]; then
+            kill -INT "${xw_pid}" 2>/dev/null || true
+            sleep 0.2
+            kill -9 "${xw_pid}" 2>/dev/null || true
+            rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+        fi
+        clean_environment
     elif [ "${ENV_CHOICE}" = "2" ]; then
         "${WS_ROOT}/run.sh" --native ${cmd}
     elif [ "${ENV_CHOICE}" = "3" ]; then
@@ -125,9 +147,10 @@ menu_single_robot() {
     echo " 8) explore_lite Autonomous Frontier Exploration (Nav2 + SLAM Toolbox)"
     echo " 9) Hybrid OpenFrontier + SplatSearch (VLM Grounded Frontiers + 3DGS)"
     echo " 10) 3D Gaussian Splatting Reconstruction (Depth-Anything-V2 + gsplat -> SuperSplat PLY)"
-    echo " 11) Back to Main Menu"
+    echo " 11) Visual Pursuit & Servoing Pipeline (YOLO-World + DINOv2 + LightGlue + IBVS)"
+    echo " 12) Back to Main Menu"
     echo ""
-    read -r -p "Select option [1-11]: " choice
+    read -r -p "Select option [1-12]: " choice
 
     case "$choice" in
         1)
@@ -240,6 +263,48 @@ menu_single_robot() {
             esac
             ;;
         11)
+            echo ""
+            echo -e "${CYAN}==================================================================${NC}"
+            echo -e "${BOLD}  Visual Pursuit & Servoing Pipeline (Khepera IV)                 ${NC}"
+            echo -e "${CYAN}==================================================================${NC}"
+            echo " 1) 🚀 Launch Gazebo Sim + Mapping + Visual Pursuit (End-to-End Simulation Arena)"
+            echo " 2) Online Nodes: Perception + IBVS Visual Servoing (Connects to running robot / sim)"
+            echo " 3) Online Nodes: Perception Only (YOLO-World + DINOv2 Verifier + LightGlue Tracker)"
+            echo " 4) Back"
+            read -r -p "Select execution mode [1-4] (default: 1): " pursuit_mode
+            case "${pursuit_mode:-1}" in
+                1)
+                    read -r -p "Target template image path (leave empty for live stream): " tgt_img
+                    TGT_PARAM=""
+                    if [ -n "$tgt_img" ]; then
+                        TGT_PARAM=" target_image_path:=\"${tgt_img}\""
+                    fi
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit sim_visual_pursuit.launch.py launch_controller:=true${TGT_PARAM}"
+                    ;;
+                2)
+                    read -r -p "Target template image path (leave empty for live stream): " tgt_img
+                    TGT_PARAM=""
+                    if [ -n "$tgt_img" ]; then
+                        TGT_PARAM=" target_image_path:=\"${tgt_img}\""
+                    fi
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit perception_pipeline.launch.py launch_controller:=true${TGT_PARAM}"
+                    ;;
+                3)
+                    read -r -p "Target template image path (leave empty for live stream): " tgt_img
+                    TGT_PARAM=""
+                    if [ -n "$tgt_img" ]; then
+                        TGT_PARAM=" target_image_path:=\"${tgt_img}\""
+                    fi
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit perception_pipeline.launch.py launch_controller:=false${TGT_PARAM}"
+                    ;;
+                *)
+                    ;;
+            esac
+            ;;
+        12)
             return
             ;;
         *)
@@ -333,9 +398,10 @@ menu_physical_lab() {
     echo " 3) Connect Single Robot: Bridge + Mapper + Dashboard + RViz2"
     echo " 4) Launch Keyboard Teleoperation (/cmd_vel)"
     echo " 5) Save Active 2D Map to maps/"
-    echo " 6) Back to Main Menu"
+    echo " 6) USB Serial Programming & Swarm Provisioner (First-time setup / Recovery)"
+    echo " 7) Back to Main Menu"
     echo ""
-    read -r -p "Select option [1-6]: " choice
+    read -r -p "Select option [1-7]: " choice
 
     case "$choice" in
         1)
@@ -360,6 +426,10 @@ menu_physical_lab() {
             read -r -p "Press [Enter] to continue..."
             ;;
         6)
+            python3 "${WS_ROOT}/physical_robot/khepera_serial_provisioner.py"
+            read -r -p "Press [Enter] to continue..."
+            ;;
+        7)
             return
             ;;
         *)

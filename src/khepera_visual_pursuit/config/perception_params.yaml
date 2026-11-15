@@ -1,0 +1,54 @@
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+object_detector_verifier_node:
+  ros__parameters:
+    image_topic: "/camera/image_raw"
+    target_image_topic: "/pursuit/target_image"
+    target_prompt_topic: "/pursuit/target_prompt"
+    target_image_path: ""
+    device: "auto"
+    detection_rate_hz: 5.0
+    tau_verify: 0.70
+    tau_margin: 0.08
+    classes:
+      - "target object"
+      - "cylinder"
+      - "box"
+      - "can"
+
+lightglue_tracker_node:
+  ros__parameters:
+    image_topic: "/camera/image_raw"
+    target_image_topic: "/pursuit/target_image"
+    target_prompt_topic: "/pursuit/target_prompt"
+    target_image_path: ""
+    rois_topic: "/perception/candidate_rois"
+    keypoints_topic: "/perception/target_keypoints"
+    confidence_topic: "/perception/tracking_confidence"
+    device: "auto"
+    min_keypoints: 4
+    match_threshold: 0.2
+    tracking_rate_hz: 20.0
+
+ibvs_controller_node:
+  ros__parameters:
+    auto_start: false
+    keypoints_topic: "/perception/target_keypoints"
+    confidence_topic: "/perception/tracking_confidence"
+    scan_topic: "/khepera4/scan"
+    cmd_vel_topic: "/cmd_vel"
+    control_rate_hz: 20.0
+    k_v: 0.4
+    k_omega: 1.2
+    v_max: 0.15
+    omega_max: 0.8
+    desired_area_fraction: 0.15
+    min_confidence: 0.35
+    reverse_sweep_omega: 0.2
+    obstacle_stop_distance: 0.05
+    cooperate_with_explorer: true
+    image_width: 640.0
+    image_height: 480.0
+

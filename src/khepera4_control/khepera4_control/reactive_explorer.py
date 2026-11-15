@@ -20,12 +20,17 @@ from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from khepera4_control.common import euler_from_quaternion, normalize_angle
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 import numpy as np
+from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
+from visualization_msgs.msg import Marker, MarkerArray
+
+from khepera4_control.openfrontier_explorer import FrontierCandidate, OpenFrontierExplorer
 
 
 class ReactiveExplorer(Node):
@@ -38,6 +43,7 @@ class ReactiveExplorer(Node):
     STATE_CLIFF_RECOVERY = 3
     STATE_PAUSED = 4
     STATE_INSPECT = 5
+    STATE_INITIAL_SPIN = 6
 
     def _get_current_time(self) -> float:
         """Get current node clock time in fractional seconds (respects use_sim_time / time.time)."""
@@ -63,6 +69,8 @@ class ReactiveExplorer(Node):
         self.declare_parameter('cliff_backup_duration', 1.2)
         self.declare_parameter('control_rate', 20.0)
         self.declare_parameter('stall_timeout', 0.35)
+        self.declare_parameter('linear_speed_limit', 0.12)
+        self.declare_parameter('angular_speed_limit', 0.90)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.linear_speed = float(self.get_parameter('linear_speed').value)
@@ -80,8 +88,8 @@ class ReactiveExplorer(Node):
         )
         self.control_rate = float(self.get_parameter('control_rate').value)
         self.stall_timeout = float(self.get_parameter('stall_timeout').value)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
-        # ----------------------------------------------------------------------
         # ----------------------------------------------------------------------
         # State Variables
         # ----------------------------------------------------------------------
@@ -116,13 +124,18 @@ class ReactiveExplorer(Node):
         # Courageous autonomous & user-drawn target exploration
         self.user_waypoints = collections.deque()
         self.active_goal: Optional[Tuple[float, float]] = None
+        self.goal_start_time: float = init_time
         self.start_pose: Optional[Tuple[float, float]] = None
         self.visited_goals: List[Tuple[float, float]] = []
         self.inspect_duration: float = 1.0  # seconds to scan surroundings at target
         self.inspect_angular_speed: float = 0.0  # Zero spinning (360-degree sensor vision)
         self.is_single_user_goal: bool = False
         self.front_steer_dir: float = 1.0
+        self.front_steer_lock_time: float = 0.0
         self.is_first_target: bool = True
+        self.initial_spin_done: bool = False
+        self.spin_cumulative_yaw: float = 0.0
+        self.initial_spin_speed: float = 1.80
 
         # Sensor readings caches
         self.latest_us: List[Optional[LaserScan]] = [None] * 5
@@ -133,12 +146,32 @@ class ReactiveExplorer(Node):
         self._last_frontier_calc_time = 0.0
         self._cached_frontier_heading: Optional[float] = None
 
+        # OpenFrontier map-based active exploration engine
+        self.openfrontier = OpenFrontierExplorer(
+            tau_merge_m=0.70,
+            r_clear_m=0.35,
+            r_near_m=0.30,
+            r_goal_m=0.80,
+            min_cluster_cells=4,
+            robot_safety_radius_m=0.14,
+            stall_threshold_cycles=15,
+            epsilon_stall_m=0.06,
+        )
+        self.frontier_waypoints: collections.deque = collections.deque()
+        self.last_frontier_replan_time = 0.0
+
         # ----------------------------------------------------------------------
         # Publishers & Subscribers
         # ----------------------------------------------------------------------
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.active_goal_pub = self.create_publisher(
             PointStamped, '/explorer/active_goal', 10
+        )
+        self.frontier_markers_pub = self.create_publisher(
+            MarkerArray, '/openfrontier/markers', 10
+        )
+        self.planned_path_pub = self.create_publisher(
+            Path, '/explorer/planned_path', 10
         )
 
         # Latched explorer status publisher (so dashboard immediately gets state on connect)
@@ -152,6 +185,15 @@ class ReactiveExplorer(Node):
         self.explorer_enable_pub = self.create_publisher(Bool, '/explorer/enable', qos_latched)
         self.explorer_status_pub.publish(Bool(data=self.enabled))
         self.explorer_enable_pub.publish(Bool(data=self.enabled))
+        self.thinking_pub = self.create_publisher(String, '/robot/thinking_log', 10)
+        self.speed_sub = self.create_subscription(
+            Twist, '/explorer/set_speed', self.speed_callback, 10
+        )
+        self.speed_limits_sub = self.create_subscription(
+            Twist, '/explorer/set_speed_limits', self.speed_callback, 10
+        )
+        self._last_thought_text = ""
+        self._last_thought_time = 0.0
 
         self.cliff_sub = self.create_subscription(
             Bool, '/cliff_alert', self.cliff_callback, 10
@@ -172,6 +214,15 @@ class ReactiveExplorer(Node):
         self.clear_path_sub = self.create_subscription(
             Bool, '/explorer/clear_path', self.clear_path_callback, 10
         )
+        self.pursuit_active = False
+        self.target_in_sight = False
+        self.target_status_sub = self.create_subscription(
+            Bool, '/perception/target_status', self.target_status_callback, 10
+        )
+        self.pursuit_sub = self.create_subscription(
+            Bool, '/pursuit/enable', self.pursuit_enable_callback, 10
+        )
+
         self.scan_sub = self.create_subscription(
             LaserScan, '/khepera4/scan', self.scan_callback, 10
         )
@@ -242,6 +293,89 @@ class ReactiveExplorer(Node):
     # ==========================================================================
     # Subscriber Callbacks
     # ==========================================================================
+
+    def speed_callback(self, msg: Twist) -> None:
+        """Update linear and angular speeds dynamically from teleoperation sliders or topic."""
+        if msg.linear.x > 0.01:
+            self.linear_speed = float(msg.linear.x)
+        if msg.angular.z > 0.01:
+            self.turn_speed = float(msg.angular.z)
+            self.max_turn_speed = max(self.turn_speed * 1.5, 1.5)
+
+    def _on_set_parameters(self, params: List[Parameter]) -> SetParametersResult:
+        """Handle dynamic parameter reconfigurations for exploration speed limits."""
+        for param in params:
+            if param.name in ('linear_speed', 'linear_speed_limit'):
+                val = float(param.value)
+                if val > 0.01:
+                    self.linear_speed = val
+            elif param.name in ('turn_speed', 'angular_speed_limit'):
+                val = float(param.value)
+                if val > 0.01:
+                    self.turn_speed = val
+                    self.max_turn_speed = max(self.turn_speed * 1.5, 1.5)
+            elif param.name == 'max_turn_speed':
+                val = float(param.value)
+                if val > 0.01:
+                    self.max_turn_speed = val
+        thought = (
+            f"⚡ Exploration Speed Limits Reconfigured: Cruise v = {self.linear_speed:.2f} m/s, "
+            f"Turn Rate ω = {self.turn_speed:.2f} rad/s"
+        )
+        self.publish_thought(thought)
+        return SetParametersResult(successful=True)
+
+    def pursuit_enable_callback(self, msg: Bool) -> None:
+        """Handle pursuit active toggles to enable or suspend active exploration."""
+        was_active = self.pursuit_active
+        self.pursuit_active = bool(msg.data)
+        if self.pursuit_active and not was_active:
+            self.target_in_sight = False
+            self.get_logger().info(
+                'Visual pursuit enabled. Starting active exploration search for target.'
+            )
+            self.publish_thought(
+                '🚀 Pursuit enabled: Starting fast active exploration search for target.'
+            )
+            self._set_enabled(True, 'topic /pursuit/enable')
+        elif not self.pursuit_active and was_active:
+            self.target_in_sight = False
+            self.get_logger().info(
+                'Visual pursuit disengaged. Halting autonomous exploration.'
+            )
+            self.publish_thought('🛑 Pursuit disengaged. Halting exploration.')
+            self._set_enabled(False, 'topic /pursuit/enable')
+
+    def target_status_callback(self, msg: Bool) -> None:
+        """Handle target detection status to yield or resume autonomous exploration."""
+        if not self.pursuit_active:
+            self.target_in_sight = False
+            return
+        was_in_sight = self.target_in_sight
+        self.target_in_sight = bool(msg.data)
+        if self.target_in_sight and not was_in_sight:
+            self.get_logger().info(
+                'Target acquired in sight! Halting explorer and yielding to IBVS pursuit.'
+            )
+            self.publish_thought('🎯 Target in sight! Yielding control to visual pursuit.')
+            self._stop_robot()
+        elif not self.target_in_sight and was_in_sight:
+            self.get_logger().info(
+                'Target lost from visual sight. Resuming active exploration search.'
+            )
+            self.publish_thought('🔍 Target out of sight. Resuming active exploration search.')
+
+    def publish_thought(self, text: str, force: bool = False) -> None:
+        """Publish cognitive reasoning log for dashboard telemetry."""
+        now = self._get_current_time()
+        if not force and text == self._last_thought_text and (now - self._last_thought_time) < 2.0:
+            return
+        self._last_thought_text = text
+        self._last_thought_time = now
+        if hasattr(self, 'thinking_pub') and self.thinking_pub:
+            msg = String()
+            msg.data = text
+            self.thinking_pub.publish(msg)
 
     def fused_odom_callback(self, msg: Odometry):
         """Track filtered, slip-projected odometry on /khepera4/odom (highest priority)."""
@@ -407,11 +541,19 @@ class ReactiveExplorer(Node):
     def set_user_goal(self, x: float, y: float):
         """Set a single target location to be explored."""
         self.user_waypoints.clear()
+        self.frontier_waypoints.clear()
         self.is_single_user_goal = True
+        self.initial_spin_done = True
+        self.is_first_target = False
         self.active_goal = (float(x), float(y))
         self.goal_start_time = self._get_current_time()
         self.get_logger().info(f'User target set: ({x:.2f}, {y:.2f}).')
         self._publish_active_goal()
+        thought = (
+            f"I pick user-designated target ({x:.2f}, {y:.2f}) "
+            f"because navigating here offers a direct line of sight to spot the object."
+        )
+        self.publish_thought(thought, force=True)
         if not self.enabled:
             self._set_enabled(True, 'user target set')
         if self.state in (self.STATE_INSPECT, self.STATE_CRUISE, self.STATE_PAUSED):
@@ -420,7 +562,10 @@ class ReactiveExplorer(Node):
     def set_user_path(self, points: List[Tuple[float, float]]):
         """Set ordered waypoints from user-drawn path."""
         self.user_waypoints.clear()
+        self.frontier_waypoints.clear()
         self.is_single_user_goal = False
+        self.initial_spin_done = True
+        self.is_first_target = False
         for pt in points:
             self.user_waypoints.append((float(pt[0]), float(pt[1])))
         if self.user_waypoints:
@@ -433,6 +578,11 @@ class ReactiveExplorer(Node):
                 f'User path received with {len(points)} waypoints. Active target: {self.active_goal}.'
             )
             self._publish_active_goal()
+            thought = (
+                f"I pick user trajectory toward ({self.active_goal[0]:.2f}, {self.active_goal[1]:.2f}) "
+                f"to scan for visual verification of the target object along this path."
+            )
+            self.publish_thought(thought, force=True)
         if not self.enabled:
             self._set_enabled(True, 'user path set')
         if self.state in (self.STATE_INSPECT, self.STATE_CRUISE, self.STATE_PAUSED):
@@ -441,6 +591,7 @@ class ReactiveExplorer(Node):
     def clear_user_path(self):
         """Clear all user waypoints and active goal."""
         self.user_waypoints.clear()
+        self.frontier_waypoints.clear()
         self.is_single_user_goal = False
         self.active_goal = None
         self.get_logger().info('User path cleared. Resuming autonomous exploration.')
@@ -457,8 +608,87 @@ class ReactiveExplorer(Node):
         msg.point.z = 0.0
         self.active_goal_pub.publish(msg)
 
-    def _find_map_frontier_target(self) -> Optional[Tuple[float, float]]:
-        """Find a candidate frontier point from latest_map that is reachable and unexplored."""
+    def _publish_frontier_markers(self) -> None:
+        """Publish RViz visualization markers for active OpenFrontier candidates."""
+        if not hasattr(self, 'frontier_markers_pub') or not self.frontier_markers_pub:
+            return
+        marker_array = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+
+        del_marker = Marker()
+        del_marker.action = Marker.DELETEALL
+        marker_array.markers.append(del_marker)
+
+        for idx, (fid, f) in enumerate(self.openfrontier.active_frontiers.items()):
+            # Sphere marker
+            m = Marker()
+            m.header.frame_id = 'map'
+            m.header.stamp = stamp
+            m.ns = 'openfrontiers'
+            m.id = idx * 2
+            m.type = Marker.SPHERE
+            m.action = Marker.ADD
+            m.pose.position.x = float(f.pos_x)
+            m.pose.position.y = float(f.pos_y)
+            m.pose.position.z = 0.12
+            m.pose.orientation.w = 1.0
+            m.scale.x = 0.20
+            m.scale.y = 0.20
+            m.scale.z = 0.20
+            is_goal = (self.openfrontier.current_goal is not None and self.openfrontier.current_goal.id == fid)
+            if is_goal:
+                m.color.r = 1.0
+                m.color.g = 0.85
+                m.color.b = 0.0
+                m.color.a = 0.95
+            else:
+                m.color.r = 0.0
+                m.color.g = 0.8
+                m.color.b = 1.0
+                m.color.a = 0.75
+            marker_array.markers.append(m)
+
+            # Text label marker
+            t = Marker()
+            t.header.frame_id = 'map'
+            t.header.stamp = stamp
+            t.ns = 'openfrontiers'
+            t.id = idx * 2 + 1
+            t.type = Marker.TEXT_VIEW_FACING
+            t.action = Marker.ADD
+            t.pose.position.x = float(f.pos_x)
+            t.pose.position.y = float(f.pos_y)
+            t.pose.position.z = 0.26
+            t.pose.orientation.w = 1.0
+            t.scale.z = 0.14
+            t.text = f"{f.id} (u={f.total_utility:.1f})"
+            t.color.r = 1.0
+            t.color.g = 1.0
+            t.color.b = 1.0
+            t.color.a = 1.0
+            marker_array.markers.append(t)
+
+        self.frontier_markers_pub.publish(marker_array)
+
+    def _publish_planned_path(self, waypoints: List[Tuple[float, float]]) -> None:
+        """Publish A* planned path on /explorer/planned_path."""
+        if not hasattr(self, 'planned_path_pub') or not self.planned_path_pub:
+            return
+        path_msg = Path()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        path_msg.header.frame_id = 'map'
+        for x, y in waypoints:
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+            path_msg.poses.append(pose)
+        self.planned_path_pub.publish(path_msg)
+
+    def _find_raycast_frontier_target(self) -> Optional[Tuple[float, float]]:
+        """Fallback frontier raycaster from latest_map."""
         if self.latest_map is None:
             return None
         info = self.latest_map.info
@@ -473,14 +703,16 @@ class ReactiveExplorer(Node):
         grid = np.array(self.latest_map.data, dtype=np.int8).reshape((h, w))
         best_candidate = None
         best_score = -1e9
-        num_rays = 24
+        num_rays = 36
 
         for k in range(num_rays):
             heading = -math.pi + k * (2.0 * math.pi / num_rays)
             cos_h = math.cos(heading)
             sin_h = math.sin(heading)
             frontier_hit = None
-            for d in np.arange(0.35, 1.9, 0.1):
+            last_free_pt = None
+
+            for d in np.arange(0.15, 2.30, 0.08):
                 px = self.current_x + d * cos_h
                 py = self.current_y + d * sin_h
                 if abs(px) > 2.15 or abs(py) > 2.15:
@@ -490,55 +722,319 @@ class ReactiveExplorer(Node):
                 if col < 0 or col >= w or row < 0 or row >= h:
                     break
                 val = grid[row, col]
-                if val >= 50:  # Obstacle hit
+                if val >= 50:
                     break
-                elif val == -1:  # Frontier reached
-                    frontier_hit = (px, py, d)
+                elif 0 <= val < 25:
+                    last_free_pt = (px, py, d)
+                elif val == -1 and last_free_pt is not None:
+                    if d >= 0.25:
+                        frontier_hit = (last_free_pt[0], last_free_pt[1], d)
                     break
+
             if frontier_hit is not None:
                 fx, fy, fd = frontier_hit
                 dist_to_visited = min(
                     [math.hypot(fx - vx, fy - vy) for vx, vy in self.visited_goals[-6:]],
                     default=2.0
                 )
-                score = fd + 1.5 * dist_to_visited
+                f_col = int(math.floor((fx - ox) / res))
+                f_row = int(math.floor((fy - oy) / res))
+                r_min = max(0, f_row - 8)
+                r_max = min(h, f_row + 9)
+                c_min = max(0, f_col - 8)
+                c_max = min(w, f_col + 9)
+                sub_grid = grid[r_min:r_max, c_min:c_max]
+                unknown_gain = np.count_nonzero(sub_grid == -1)
+
+                score = (1.5 * fd) + (2.5 * dist_to_visited) + (0.05 * unknown_gain)
                 if score > best_score:
                     best_score = score
                     best_candidate = (fx, fy)
+
         return best_candidate
 
+    def _find_highest_unknown_sector(self) -> Optional[Tuple[float, float]]:
+        """
+        Identify the arena sector with the highest concentration of unexplored cells.
+
+        Evaluates 13 spatial sectors across the arena, computes information gain,
+        and targets the safe centroid of the least explored area.
+        """
+        if self.latest_map is None:
+            return None
+        info = self.latest_map.info
+        res = info.resolution
+        w, h = info.width, info.height
+        ox, oy = info.origin.position.x, info.origin.position.y
+        if len(self.latest_map.data) != w * h:
+            return None
+
+        grid = np.array(self.latest_map.data, dtype=np.int8).reshape((h, w))
+
+        # Candidate coordinates prioritizing the four quadrants, then central corridors
+        candidate_coords = [
+            (1.35, -1.35),
+            (1.35, 1.35),
+            (-1.35, 1.35),
+            (-1.35, -1.35),
+            (0.00, -1.35),
+            (1.35, 0.00),
+            (0.00, 1.35),
+            (-1.35, 0.00),
+        ]
+
+        best_pt = None
+        best_score = 0.0
+        sector_radius = 0.85  # meters around sector center
+
+        for cx, cy in candidate_coords:
+            c_col = int(math.floor((cx - ox) / res))
+            c_row = int(math.floor((cy - oy) / res))
+            if not (0 <= c_col < w and 0 <= c_row < h):
+                continue
+
+            dist_to_robot = math.hypot(cx - self.current_x, cy - self.current_y)
+            # Penalty for any visited location in this session
+            visited_penalty = 0.0
+            for vx, vy in self.visited_goals:
+                d_vis = math.hypot(cx - vx, cy - vy)
+                if d_vis < 0.90:
+                    visited_penalty += 2000.0 * (1.0 - d_vis / 0.90)
+
+            r0 = max(0, int(math.floor((cy - sector_radius - oy) / res)))
+            r1 = min(h, int(math.ceil((cy + sector_radius - oy) / res)))
+            c0 = max(0, int(math.floor((cx - sector_radius - ox) / res)))
+            c1 = min(w, int(math.ceil((cx + sector_radius - ox) / res)))
+
+            sub = grid[r0:r1, c0:c1]
+
+            # Only count unknown cells inside navigable arena bounds (|x| <= 2.35, |y| <= 2.35)
+            col_indices = np.arange(c0, c1)
+            row_indices = np.arange(r0, r1)
+            col_x = ox + (col_indices + 0.5) * res
+            row_y = oy + (row_indices + 0.5) * res
+            valid_x = np.abs(col_x) <= 2.35
+            valid_y = np.abs(row_y) <= 2.35
+            in_arena_mask = np.outer(valid_y, valid_x)
+            unknown_count = int(np.count_nonzero((sub == -1) & in_arena_mask))
+
+            if unknown_count < 100:
+                continue
+
+            score = float(unknown_count) / (1.0 + 0.30 * dist_to_robot) - visited_penalty
+            if score > best_score:
+                # Find nearest free cell in case candidate coordinate is obstructed
+                target_cand = None
+                if grid[c_row, c_col] < 50:
+                    target_cand = (cx, cy)
+                else:
+                    for dr in range(-10, 11):
+                        for dc in range(-10, 11):
+                            nr, nc = c_row + dr, c_col + dc
+                            if 0 <= nr < h and 0 <= nc < w and grid[nr, nc] == 0:
+                                target_cand = (ox + (nc + 0.5) * res, oy + (nr + 0.5) * res)
+                                break
+                        if target_cand is not None:
+                            break
+                if target_cand is not None:
+                    best_score = score
+                    best_pt = target_cand
+
+        return best_pt
+
+    def _find_map_frontier_target(self) -> Optional[Tuple[float, float]]:
+        """Find candidate frontier point from latest_map using OpenFrontier algorithm."""
+        if self.latest_map is None:
+            return None
+        proposals = self.openfrontier.detect_frontiers(
+            self.latest_map, self.current_x, self.current_y
+        )
+        self.openfrontier.merge_proposals(proposals)
+        self.openfrontier.prune_cleared_frontiers(self.current_x, self.current_y)
+        best = self.openfrontier.select_best_frontier(self.current_x, self.current_y)
+        self._publish_frontier_markers()
+        if best is not None:
+            return (best.pos_x, best.pos_y)
+        return self._find_raycast_frontier_target()
+
     def _select_exploration_target(self) -> Optional[Tuple[float, float]]:
-        """Select next exploration target: user waypoints first, initial random courage point, then frontiers."""
-        # 1. User-drawn path waypoints
+        """
+        Select next exploration target: user waypoints first, OpenFrontier map frontiers, then arena fallback.
+
+        ========================================================================
+        HOOK 2: FRONTIER DETECTION ALGORITHM EXTENSION POINT
+        Pluggable frontier detection engines:
+        1. OpenFrontier cluster detection & A* path planner (default active)
+        2. Fast Raycast Frontier Edge Detector (boundary transition scan)
+        3. Active Unknown Sector Density Surveyor (direct active unknown exploration)
+        4. User-designated target & waypoints (highest priority override)
+        ========================================================================
+        """
+        # 1. User-drawn path waypoints (highest priority manual guidance)
         while self.user_waypoints:
             target = self.user_waypoints.popleft()
-            if not self.has_odom or math.hypot(target[0] - self.current_x, target[1] - self.current_y) >= 0.12 or not self.user_waypoints:
-                self.get_logger().info(f'Navigating to user waypoint: ({target[0]:.2f}, {target[1]:.2f}).')
+            if (not self.has_odom or
+                    math.hypot(target[0] - self.current_x, target[1] - self.current_y) >= 0.12 or
+                    not self.user_waypoints):
+                self.get_logger().info(
+                    f'Navigating to user waypoint: ({target[0]:.2f}, {target[1]:.2f}).'
+                )
+                thought = (
+                    f"I pick user waypoint target ({target[0]:.2f}, {target[1]:.2f}) "
+                    f"to check if the target object is visible along this path."
+                )
+                self.publish_thought(thought, force=True)
                 return target
 
-        # 2. First target: Pick a random courageous location not too far from starting point (0.8m to 1.4m away)
+        # 2. Existing planned frontier waypoints
+        while self.frontier_waypoints:
+            wp = self.frontier_waypoints.popleft()
+            if (not self.has_odom or
+                    math.hypot(wp[0] - self.current_x, wp[1] - self.current_y) >= 0.12 or
+                    not self.frontier_waypoints):
+                return wp
+
+        # ======================================================================
+        # HOOK 2.3: ACTIVE UNKNOWN SECTOR DENSITY SURVEYOR
+        # Direct active exploration: targets unvisited sectors with high unknown volume.
+        # Prioritized when major unexplored quadrants remain (> 100 unknown cells).
+        # ======================================================================
+        sector_pt = self._find_highest_unknown_sector()
+        if sector_pt is not None:
+            waypoints = self.openfrontier.plan_path(
+                self.latest_map, self.current_x, self.current_y, sector_pt[0], sector_pt[1]
+            )
+            self._publish_planned_path(waypoints)
+            self.frontier_waypoints.clear()
+            if len(waypoints) > 1:
+                valid_wps = [
+                    pt for pt in waypoints
+                    if math.hypot(pt[0] - self.current_x, pt[1] - self.current_y) >= 0.15
+                ]
+                if valid_wps:
+                    target_pt = valid_wps[0]
+                    for pt in valid_wps[1:]:
+                        self.frontier_waypoints.append(pt)
+                else:
+                    target_pt = sector_pt
+            else:
+                target_pt = sector_pt
+
+            fid = self.openfrontier.generate_next_id()
+            self.openfrontier.current_goal = FrontierCandidate(
+                id=f"SEC_{fid}",
+                pos_x=sector_pt[0],
+                pos_y=sector_pt[1],
+                cluster_size=100,
+                exploration_gain=500.0,
+                distance=math.hypot(sector_pt[0] - self.current_x, sector_pt[1] - self.current_y),
+                semantic_prob=1.0,
+                total_utility=500.0,
+                is_viewpoint_frontier=False,
+            )
+            self.openfrontier.stall_tracker.stall_counter = 0
+            self.openfrontier.stall_tracker.d_prev = 1e9
+
+            self.get_logger().info(
+                f'[SectorSurveyor] Selected active unknown sector target at ({sector_pt[0]:.2f}, {sector_pt[1]:.2f}) '
+                f'({len(waypoints)} A* waypoints).'
+            )
+            thought = (
+                f"Navigating to unexplored sector ({sector_pt[0]:.2f}, {sector_pt[1]:.2f}) "
+                f"to rapidly expand map coverage."
+            )
+            self.publish_thought(thought, force=True)
+            return target_pt
+
+        # ======================================================================
+        # HOOK 2.1: OPENFRONTIER CLUSTER EXTRACTION & COLLISION-FREE A* PLANNING
+        # Detects navigable boundary clusters between explored free and unknown cells.
+        # ======================================================================
+        if self.latest_map is not None:
+            proposals = self.openfrontier.detect_frontiers(
+                self.latest_map, self.current_x, self.current_y
+            )
+            self.openfrontier.merge_proposals(proposals)
+            self.openfrontier.prune_cleared_frontiers(self.current_x, self.current_y)
+            best = self.openfrontier.select_best_frontier(
+                self.current_x, self.current_y, visited_history=list(self.visited_goals)
+            )
+            self._publish_frontier_markers()
+
+            if best is not None and best.total_utility > 0:
+                waypoints = self.openfrontier.plan_path(
+                    self.latest_map, self.current_x, self.current_y, best.pos_x, best.pos_y
+                )
+                self._publish_planned_path(waypoints)
+                self.frontier_waypoints.clear()
+
+                if len(waypoints) > 1:
+                    valid_wps = [
+                        pt for pt in waypoints
+                        if math.hypot(pt[0] - self.current_x, pt[1] - self.current_y) >= 0.15
+                    ]
+                    if valid_wps:
+                        target_pt = valid_wps[0]
+                        for pt in valid_wps[1:]:
+                            self.frontier_waypoints.append(pt)
+                    else:
+                        target_pt = (best.pos_x, best.pos_y)
+                else:
+                    target_pt = (best.pos_x, best.pos_y)
+
+                if self.openfrontier.current_goal is not None:
+                    self.openfrontier.stall_tracker.stall_counter = 0
+                    self.openfrontier.stall_tracker.d_prev = 1e9
+
+                self.get_logger().info(
+                    f'[OpenFrontier] Selected frontier {best.id} at ({best.pos_x:+.2f}, {best.pos_y:+.2f}) '
+                    f'gain={best.exploration_gain:.1f}, dist={best.distance:.2f}m -> Utility={best.total_utility:.1f} '
+                    f'({len(waypoints)} A* waypoints).'
+                )
+                thought = (
+                    f"🔭 [OpenFrontier] Selected frontier {best.id} at ({best.pos_x:+.2f}, {best.pos_y:+.2f}) "
+                    f"gain={best.exploration_gain:.1f}, dist={best.distance:.2f}m -> Utility={best.total_utility:.1f}. "
+                    f"Following collision-free A* trajectory."
+                )
+                self.publish_thought(thought, force=True)
+                return target_pt
+
+        # ======================================================================
+        # HOOK 2.2: RAYCAST FRONTIER EDGE DETECTOR (FAST BOUNDARY TRANSITION)
+        # Direct line-of-sight unknown boundary detection from current robot pose.
+        # ======================================================================
+        raycast_pt = self._find_raycast_frontier_target()
+        if raycast_pt is not None:
+            self.get_logger().info(
+                f'Frontier target selected from raycaster: ({raycast_pt[0]:.2f}, {raycast_pt[1]:.2f}).'
+            )
+            thought = (
+                f"I pick frontier target ({raycast_pt[0]:.2f}, {raycast_pt[1]:.2f}) "
+                f"because this unexplored boundary offers a vantage where I might see the target object."
+            )
+            self.publish_thought(thought, force=True)
+            return raycast_pt
+
+        # 4. First target fallback: Pick a courageous forward location (1.0m to 1.6m away)
         if self.is_first_target:
             self.is_first_target = False
             sx, sy = self.start_pose if self.start_pose is not None else (self.current_x, self.current_y)
             rand_ang = float(np.random.uniform(-math.pi, math.pi))
-            rand_dist = float(np.random.uniform(0.80, 1.40))
+            rand_dist = float(np.random.uniform(1.00, 1.60))
             gx = float(np.clip(sx + rand_dist * math.cos(rand_ang), -2.10, 2.10))
             gy = float(np.clip(sy + rand_dist * math.sin(rand_ang), -2.10, 2.10))
             self.get_logger().info(
                 f'Courageous initial target selected: ({gx:.2f}, {gy:.2f}) '
                 f'at {rand_dist:.2f}m from start ({sx:.2f}, {sy:.2f}).'
             )
+            thought = (
+                f"I pick initial target ({gx:.2f}, {gy:.2f}) because establishing this forward "
+                f"vantage gives a clear angle where I might see the target object."
+            )
+            self.publish_thought(thought, force=True)
             return (gx, gy)
 
-        # 3. Subsequent autonomous targets: Try finding frontier from occupancy grid
-        frontier_pt = self._find_map_frontier_target()
-        if frontier_pt is not None:
-            self.get_logger().info(
-                f'Frontier target selected from map: ({frontier_pt[0]:.2f}, {frontier_pt[1]:.2f}).'
-            )
-            return frontier_pt
-
-        # 4. Fallback: Select an unvisited location in arena bounds
+        # 5. Fallback: Select an unvisited location in arena bounds
         for _ in range(25):
             rand_ang = float(np.random.uniform(-math.pi, math.pi))
             rand_dist = float(np.random.uniform(0.90, 1.60))
@@ -547,12 +1043,22 @@ class ReactiveExplorer(Node):
             too_close = any(math.hypot(gx - vx, gy - vy) < 0.50 for vx, vy in self.visited_goals[-8:])
             if not too_close:
                 self.get_logger().info(f'Autonomous arena target selected: ({gx:.2f}, {gy:.2f}).')
+                thought = (
+                    f"I pick unvisited arena sector ({gx:.2f}, {gy:.2f}) "
+                    f"to search for the target object from a fresh vantage point."
+                )
+                self.publish_thought(thought, force=True)
                 return (gx, gy)
 
         # Fallback to opposite direction if all candidates close
         escape_ang = normalize_angle(self.current_yaw + math.pi)
         gx = float(np.clip(self.current_x + 1.2 * math.cos(escape_ang), -2.10, 2.10))
         gy = float(np.clip(self.current_y + 1.2 * math.sin(escape_ang), -2.10, 2.10))
+        thought = (
+            f"Repositioning toward ({gx:.2f}, {gy:.2f}) to clear obstacles and "
+            f"reopen wide visual search for the target object."
+        )
+        self.publish_thought(thought, force=True)
         return (gx, gy)
 
     # ==========================================================================
@@ -798,6 +1304,10 @@ class ReactiveExplorer(Node):
         if not self.enabled:
             return
 
+        # When visual pursuit is active and target is in sight, yield control to IBVS controller
+        if self.pursuit_active and self.target_in_sight:
+            return
+
         if self.is_turned_over:
             self._stop_robot()
             return
@@ -886,6 +1396,34 @@ class ReactiveExplorer(Node):
             self.active_goal = self._select_exploration_target()
             self.goal_start_time = now
             self._publish_active_goal()
+
+        # ----------------------------------------------------------------------
+        # State: INITIAL_SPIN (Quick 360° survey upon map spawn)
+        # ----------------------------------------------------------------------
+        if self.state == self.STATE_INITIAL_SPIN:
+            delta_yaw = abs(normalize_angle(self.current_yaw - self.spin_last_yaw))
+            self.spin_cumulative_yaw += delta_yaw
+            self.spin_last_yaw = self.current_yaw
+
+            if self.spin_cumulative_yaw >= (2.0 * math.pi - 0.05) or elapsed_state > 12.0:
+                self.get_logger().info(
+                    'Initial 360° survey completed. Seeding SLAM map and starting frontier exploration.'
+                )
+                self.publish_thought(
+                    "Initial 360° survey completed. Beginning room frontier exploration.",
+                    force=True
+                )
+                self.initial_spin_done = True
+                self.state = self.STATE_CRUISE
+                self.state_start_time = now
+                self.stall_start_time = None
+                self.active_goal = None
+            else:
+                cmd.linear.x = 0.0
+                cmd.angular.z = self.initial_spin_speed
+                self.last_commanded_v = 0.0
+                self.cmd_pub.publish(cmd)
+                return
 
         # Read sector distances
         d_left, d_front, d_right = self._extract_sector_distances()
@@ -1012,6 +1550,30 @@ class ReactiveExplorer(Node):
         # ----------------------------------------------------------------------
         # Target Selection & Arrival Check
         # ----------------------------------------------------------------------
+        # Check if initial survey spin should be triggered (first time spawned in empty SLAM map)
+        if (not self.initial_spin_done and self.is_first_target and self.active_goal is None
+                and self.state == self.STATE_CRUISE
+                and self.has_odom and not self.user_waypoints and not self.is_single_user_goal
+                and self.last_commanded_v <= 0.02):
+            map_is_empty = (
+                self.latest_map is None
+                or np.count_nonzero(np.array(self.latest_map.data) != -1) < 200
+            )
+            if map_is_empty and not getattr(self, '_skip_initial_spin', False):
+                self.state = self.STATE_INITIAL_SPIN
+                self.state_start_time = now
+                self.spin_cumulative_yaw = 0.0
+                self.spin_last_yaw = self.current_yaw
+                self.publish_thought(
+                    "Executing initial 360° scan to survey surroundings and seed SLAM map.",
+                    force=True
+                )
+                cmd.linear.x = 0.0
+                cmd.angular.z = self.initial_spin_speed
+                self.last_commanded_v = 0.0
+                self.cmd_pub.publish(cmd)
+                return
+
         if self.active_goal is None:
             self.active_goal = self._select_exploration_target()
             self.goal_start_time = now
@@ -1033,14 +1595,50 @@ class ReactiveExplorer(Node):
                     self.active_goal[1] - self.current_y
                 )
 
+            # Smooth frontier path advancement (A* waypoints)
+            while not self.user_waypoints and self.frontier_waypoints and dist_to_goal <= 0.20:
+                self.active_goal = self.frontier_waypoints.popleft()
+                self.goal_start_time = now
+                self._publish_active_goal()
+                if self.openfrontier.current_goal is not None:
+                    self.openfrontier.stall_tracker.stall_counter = 0
+                    self.openfrontier.stall_tracker.d_prev = 1e9
+                dist_to_goal = math.hypot(
+                    self.active_goal[0] - self.current_x,
+                    self.active_goal[1] - self.current_y
+                )
+
+            # OpenFrontier Stall Recovery (Algorithm 3)
+            if not self.is_single_user_goal and self.openfrontier.current_goal is not None:
+                if d_front > 0.155 and self.openfrontier.handle_progress(dist_to_goal):
+                    self.get_logger().warn(
+
+                        f'[OpenFrontier] Goal {self.openfrontier.current_goal.id} stalled! '
+                        f'Pruning and selecting next frontier.'
+                    )
+                    self.openfrontier.drop_frontier(self.openfrontier.current_goal.id)
+                    self.visited_goals.append(self.active_goal)
+                    self.frontier_waypoints.clear()
+                    self.active_goal = self._select_exploration_target()
+                    self.goal_start_time = now
+                    self._publish_active_goal()
+                    if self.active_goal is not None:
+                        dist_to_goal = math.hypot(
+                            self.active_goal[0] - self.current_x,
+                            self.active_goal[1] - self.current_y
+                        )
+
             # Destination arrival check (only for final target or single goal)
-            arrival_dist = 0.22 if self.is_single_user_goal else 0.16
-            if dist_to_goal <= arrival_dist and not self.user_waypoints:
+            arrival_dist = 0.22 if self.is_single_user_goal else 0.20
+            if dist_to_goal <= arrival_dist and not self.user_waypoints and not self.frontier_waypoints:
                 self.get_logger().info(
                     f'Arrived at target ({self.active_goal[0]:.2f}, {self.active_goal[1]:.2f}) '
                     f'[dist={dist_to_goal:.2f}m].'
                 )
                 self.visited_goals.append(self.active_goal)
+                self.openfrontier.prune_cleared_frontiers(self.current_x, self.current_y)
+                if self.openfrontier.current_goal is not None:
+                    self.openfrontier.drop_frontier(self.openfrontier.current_goal.id)
                 self.active_goal = None
 
                 if self.is_single_user_goal:
@@ -1063,7 +1661,10 @@ class ReactiveExplorer(Node):
                     f'Target {self.active_goal} obstructed/timeout ({now - self.goal_start_time:.1f}s). '
                     'Selecting next target.'
                 )
+                if self.openfrontier.current_goal is not None:
+                    self.openfrontier.drop_frontier(self.openfrontier.current_goal.id)
                 self.visited_goals.append(self.active_goal)
+                self.frontier_waypoints.clear()
                 self.active_goal = self._select_exploration_target()
                 self.goal_start_time = now
                 self._publish_active_goal()
@@ -1084,8 +1685,10 @@ class ReactiveExplorer(Node):
 
         w_repulse = (w_right - w_left) * self.turn_speed * 1.5
         if w_front > 0.0:
-            if abs(d_left - d_right) > 0.02:
-                self.front_steer_dir = 1.0 if d_left >= d_right else -1.0
+            if now > getattr(self, 'front_steer_lock_time', 0.0):
+                if abs(d_left - d_right) > 0.03:
+                    self.front_steer_dir = 1.0 if d_left >= d_right else -1.0
+                    self.front_steer_lock_time = now + 0.8
             turn_bias = self.front_steer_dir * w_front * self.turn_speed
             w_repulse += turn_bias
 
@@ -1126,31 +1729,33 @@ class ReactiveExplorer(Node):
         # Proactive Speed Governor: strictly 0 forward speed when obstacle is closer than safe_dist
         if d_front <= (safe_dist + 1e-3):
             target_v = 0.0
-            steer_sign = self.front_steer_dir
-            if self.active_goal is not None and abs(goal_err) > 0.15:
-                if goal_err < 0 and d_right > 0.08:
-                    steer_sign = -1.0
-                elif goal_err > 0 and d_left > 0.08:
-                    steer_sign = 1.0
-            target_w = steer_sign * max(self.turn_speed, 1.1)
+            if now > getattr(self, 'front_steer_lock_time', 0.0):
+                self.front_steer_dir = 1.0 if d_left >= d_right else -1.0
+                self.front_steer_lock_time = now + 0.8
+            target_w = self.front_steer_dir * max(self.turn_speed, 1.2)
         elif d_front < slow_dist:
             u = (d_front - safe_dist) / (slow_dist - safe_dist)
-            speed_factor = u * u  # Smooth quadratic deceleration
-            turn_ratio = abs(target_w) / self.max_turn_speed
-            turn_red = max(0.25, 1.0 - 0.40 * turn_ratio)
-            target_v = self.linear_speed * speed_factor * turn_red
-        else:
-            speed_factor = max(0.30, 1.0 - 0.70 * w_front)
+            speed_factor = max(0.35, u)  # Smooth linear deceleration, maintaining momentum
             turn_ratio = abs(target_w) / self.max_turn_speed
             turn_red = max(0.40, 1.0 - 0.35 * turn_ratio)
             target_v = self.linear_speed * speed_factor * turn_red
+        else:
+            speed_factor = max(0.45, 1.0 - 0.50 * w_front)
+            turn_ratio = abs(target_w) / self.max_turn_speed
+            turn_red = max(0.50, 1.0 - 0.30 * turn_ratio)
+            target_v = self.linear_speed * speed_factor * turn_red
+
+        # Maintain positive forward speed when heading towards target with clear path ahead
+        if d_front > 0.30 and abs(goal_err) < 0.8 and w_front < 0.25:
+            target_v = max(target_v, min(self.linear_speed, 0.35))
 
         if target_v < 1e-4:
             target_v = 0.0
 
         # Rate-limit positive acceleration and deceleration to eliminate wheel slip
-        max_dv_pos = 0.025  # ~0.5 m/s^2 at 20Hz
-        max_dv_neg = 0.035  # ~0.7 m/s^2 at 20Hz
+        max_dv_pos = 0.028  # Rate-limited to prevent wheel slip (< 0.030 m/s per tick)
+        max_dv_neg = 0.040  # ~0.8 m/s^2 at 20Hz
+
         base_v = max(0.0, self.last_commanded_v)
         if target_v > (base_v + max_dv_pos):
             target_v = base_v + max_dv_pos

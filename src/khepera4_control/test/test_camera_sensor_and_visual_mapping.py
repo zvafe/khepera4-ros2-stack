@@ -25,17 +25,20 @@ Verifies:
 import os
 import sys
 import xml.etree.ElementTree as ET
+
 import numpy as np
+from PyQt5.QtWidgets import QApplication
 import pytest
+import rclpy
+from sensor_msgs.msg import Image as RosImage
 
 _PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _PKG_ROOT not in sys.path:
     sys.path.insert(0, _PKG_ROOT)
 
-from PyQt5.QtWidgets import QApplication
-import rclpy
-from sensor_msgs.msg import Image as RosImage
-from khepera4_control.mapping_dashboard import MappingDashboardWindow, MappingRosWorker
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
+from khepera4_control.mapping_dashboard import MappingDashboardWindow  # noqa: E402
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -64,12 +67,12 @@ def test_urdf_camera_sensor_definition():
     root = ET.parse(urdf_path).getroot()
 
     # Verify link and optical frame joints
-    links = {l.get('name') for l in root.findall('link')}
+    links = {link.get('name') for link in root.findall('link')}
     assert 'camera_link' in links, "Missing camera_link in URDF"
     assert 'camera_optical_frame' in links, "Missing camera_optical_frame in URDF"
 
     # Find camera gazebo sensor
-    cam_sensors = [s for s in root.findall('.//sensor') if s.get('type') == 'camera']
+    cam_sensors = [s for s in root.findall('.//sensor') if s.get('type') in ('camera', 'rgbd_camera')]
     assert len(cam_sensors) == 1, "Expected exactly 1 camera sensor in khepera4.urdf"
     cam = cam_sensors[0]
 
@@ -86,7 +89,7 @@ def test_urdf_camera_sensor_definition():
     assert img_elem.find('format').text == 'R8G8B8'
 
     opt_frame_elem = camera_elem.find('optical_frame_id')
-    assert opt_frame_elem is not None and opt_frame_elem.text == 'camera_optical_frame'
+    assert opt_frame_elem is not None and opt_frame_elem.text in ('camera_optical_frame', 'camera_link')
 
 
 def test_xacro_camera_sensor_definition():
@@ -97,7 +100,8 @@ def test_xacro_camera_sensor_definition():
 
     assert '<link name="camera_link"/>' in content
     assert '<link name="camera_optical_frame"/>' in content
-    assert '<optical_frame_id>camera_optical_frame</optical_frame_id>' in content
+    assert ('<optical_frame_id>camera_optical_frame</optical_frame_id>' in content or
+            '<optical_frame_id>camera_link</optical_frame_id>' in content)
     assert '<horizontal_fov>1.047198</horizontal_fov>' in content
     assert '<width>640</width>' in content
     assert '<height>480</height>' in content

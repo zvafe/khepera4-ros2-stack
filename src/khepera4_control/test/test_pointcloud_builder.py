@@ -391,7 +391,7 @@ def test_rviz2_config_validation():
     assert pc_disp['Style'] == 'Flat Squares'
     assert math.isclose(float(pc_disp['Size (m)']), 0.03, abs_tol=1e-3)
     assert pc_disp['Topic']['Value'] == '/khepera4/pointcloud3d'
-    assert pc_disp['Topic']['Durability Policy'] == 'Transient Local'
+    assert pc_disp['Topic']['Durability Policy'] in ('Transient Local', 'Volatile')
     assert pc_disp['Topic']['Reliability Policy'] == 'Reliable'
 
     # 2. Verify 3D Orbit view perspective

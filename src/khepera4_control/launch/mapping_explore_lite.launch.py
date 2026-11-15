@@ -236,7 +236,8 @@ def generate_launch_description():
             'visual_map_image_topic': '/visual_map/image',
             'map_publish_rate': 3.0,
             'alpha': 0.25,
-            'pitch_guard_deg': 6.0
+            'pitch_guard_deg': 6.0,
+            'publish_pointcloud_3d': False
         }]
     )
 
@@ -315,6 +316,10 @@ def generate_launch_description():
         name='rviz2_mapping',
         arguments=['-d', rviz_config_path],
         parameters=[{'use_sim_time': effective_use_sim_time}],
+        additional_env={
+            'QT_QPA_PLATFORM': 'xcb',
+            'QT_XCB_GL_INTEGRATION': 'glx',
+        },
         condition=IfCondition(LaunchConfiguration('rviz'))
     )
 

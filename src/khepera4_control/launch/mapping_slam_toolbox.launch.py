@@ -239,6 +239,10 @@ def generate_launch_description():
         name='rviz2_mapping',
         arguments=['-d', rviz_config_path],
         parameters=[{'use_sim_time': effective_use_sim_time}],
+        additional_env={
+            'QT_QPA_PLATFORM': 'xcb',
+            'QT_XCB_GL_INTEGRATION': 'glx',
+        },
         condition=IfCondition(LaunchConfiguration('rviz'))
     )
 

@@ -17,11 +17,14 @@
 import math
 import time
 
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 import numpy as np
 import pytest
 import rclpy
+from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu, LaserScan
+from std_msgs.msg import Bool
 
 from khepera4_control.common import quaternion_from_euler
 from khepera4_control.reactive_explorer import ReactiveExplorer
@@ -449,4 +452,167 @@ def test_steer_hysteresis_prevents_chattering():
         node.destroy_node()
 
 
+def test_mutual_exclusion_pursuit_active_suppresses_cmd_vel():
+    """Verify that pursuit engages active exploration until target is sighted, then halts and yields."""
+    node = ReactiveExplorer()
+    try:
+        node.enabled = True
+        node.state = node.STATE_CRUISE
+
+        published_cmds = []
+        node.cmd_pub.publish = lambda m: published_cmds.append(m)
+
+        # Baseline: normal exploration commands are published
+        node.control_loop()
+        assert len(published_cmds) == 1
+        published_cmds.clear()
+
+        # Engage visual pursuit: explorer enters active search mode
+        node.pursuit_enable_callback(Bool(data=True))
+        assert node.pursuit_active is True
+        assert node.enabled is True
+        assert node.target_in_sight is False
+
+        # Active exploration search continues to drive robot while searching
+        node.control_loop()
+        assert len(published_cmds) == 1
+        assert published_cmds[0].linear.x > 0.0
+        published_cmds.clear()
+
+        # Target acquired in sight: explorer must immediately halt and yield control
+        node.target_status_callback(Bool(data=True))
+        assert node.target_in_sight is True
+        assert len(published_cmds) == 1
+        assert published_cmds[0].linear.x == 0.0
+        assert published_cmds[0].angular.z == 0.0
+        published_cmds.clear()
+
+        # Successive control loop ticks while target in sight must suppress publishing
+        for _ in range(5):
+            node.control_loop()
+        assert len(published_cmds) == 0
+
+        # Target lost from sight: active exploration resumes search
+        node.target_status_callback(Bool(data=False))
+        assert node.target_in_sight is False
+        node.control_loop()
+        assert len(published_cmds) == 1
+        assert published_cmds[0].linear.x > 0.0
+        published_cmds.clear()
+
+        # Disengage visual pursuit: explorer disengages
+        node.pursuit_enable_callback(Bool(data=False))
+        assert node.pursuit_active is False
+        assert node.enabled is False
+    finally:
+        node.destroy_node()
+
+
+def test_dynamic_speed_scaling_via_topics():
+    """Verify speed limits update dynamically when receiving Twist commands."""
+    node = ReactiveExplorer()
+    try:
+        # Initial default speeds
+        assert math.isclose(node.linear_speed, 0.12, abs_tol=1e-3)
+        assert math.isclose(node.turn_speed, 0.90, abs_tol=1e-3)
+
+        # Send speed update via /explorer/set_speed
+        twist_msg = Twist()
+        twist_msg.linear.x = 0.22
+        twist_msg.angular.z = 1.60
+        node.speed_callback(twist_msg)
+
+        assert math.isclose(node.linear_speed, 0.22, abs_tol=1e-3)
+        assert math.isclose(node.turn_speed, 1.60, abs_tol=1e-3)
+        assert node.max_turn_speed >= 2.40
+    finally:
+        node.destroy_node()
+
+
+def test_dynamic_speed_scaling_via_parameters():
+    """Verify speed limits update dynamically via ROS 2 parameter reconfigurations."""
+    node = ReactiveExplorer()
+    try:
+        # Reconfigure using limit parameter names
+        res = node.set_parameters([
+            Parameter('linear_speed_limit', Parameter.Type.DOUBLE, 0.25),
+            Parameter('angular_speed_limit', Parameter.Type.DOUBLE, 1.80),
+        ])
+        assert all(r.successful for r in res)
+        assert math.isclose(node.linear_speed, 0.25, abs_tol=1e-3)
+        assert math.isclose(node.turn_speed, 1.80, abs_tol=1e-3)
+
+        # Reconfigure using standard parameter names
+        res2 = node.set_parameters([
+            Parameter('linear_speed', Parameter.Type.DOUBLE, 0.18),
+            Parameter('turn_speed', Parameter.Type.DOUBLE, 1.40),
+        ])
+        assert all(r.successful for r in res2)
+        assert math.isclose(node.linear_speed, 0.18, abs_tol=1e-3)
+        assert math.isclose(node.turn_speed, 1.40, abs_tol=1e-3)
+    finally:
+        node.destroy_node()
+
+
+def test_initial_360_survey_on_map_spawn():
+    """Verify robot performs quick 360° survey upon spawn in empty map before exploring."""
+    node = ReactiveExplorer()
+    try:
+        node.enabled = True
+        node.has_odom = True
+        node.current_x = 0.0
+        node.current_y = 0.0
+        node.current_yaw = 0.0
+        node.last_commanded_v = 0.0
+        assert not node.initial_spin_done
+
+        # First control loop tick on empty map enters STATE_INITIAL_SPIN
+        node.control_loop()
+        assert node.state == node.STATE_INITIAL_SPIN
+        assert node.last_commanded_v == 0.0
+
+        # Simulate 360° rotation in 4 quarter-turn steps
+        for step_deg in (90.0, 180.0, 270.0, 360.0):
+            node.current_yaw = math.radians(step_deg % 360.0)
+            node.control_loop()
+
+        # Once 360° is completed, transitions back to STATE_CRUISE and marks initial_spin_done
+        assert node.initial_spin_done
+        assert node.state == node.STATE_CRUISE
+    finally:
+        node.destroy_node()
+
+
+def test_frontier_target_selection_from_grid():
+    """Verify true frontier transition between free and unknown space is selected."""
+    node = ReactiveExplorer()
+    try:
+        node.enabled = True
+        node.has_odom = True
+        node.current_x = 0.0
+        node.current_y = 0.0
+        node.current_yaw = 0.0
+
+        grid_msg = OccupancyGrid()
+        grid_msg.info.resolution = 0.05
+        grid_msg.info.width = 100
+        grid_msg.info.height = 100
+        grid_msg.info.origin.position.x = -2.5
+        grid_msg.info.origin.position.y = -2.5
+
+        # Robot at (0, 0) [col 50, row 50]. Free space around robot up to x = +1.0m (col 70).
+        # Unknown space (-1) East of x = +1.0m (col > 70).
+        grid = np.zeros((100, 100), dtype=np.int8)
+        grid[:, 70:] = -1
+        grid_msg.data = grid.flatten().tolist()
+        node.map_callback(grid_msg)
+
+        frontier = node._find_map_frontier_target()
+        assert frontier is not None
+        # Frontier point must be in free space near the boundary (x ~ 0.90m to 1.05m, |y| <= 2.2m)
+        fx, fy = frontier
+        assert 0.60 <= fx <= 1.20
+        assert abs(fy) <= 2.20
+    finally:
+        node.destroy_node()
 

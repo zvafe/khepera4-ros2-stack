@@ -151,7 +151,8 @@ def generate_launch_description() -> LaunchDescription:
             "map_frame": "map",
             "robot_frame": "base_footprint",
             "image_topic": "/camera/image_raw",
-            "camera_info_topic": "/camera/camera_info"
+            "camera_info_topic": "/camera/camera_info",
+            "publish_pointcloud_3d": False
         }],
         condition=IfCondition(mapper_conf)
     )

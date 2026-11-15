@@ -149,6 +149,7 @@ class RosWorker(QObject):
         self.cmd_pubs['khepera_2'] = self.node.create_publisher(Twist, '/khepera_2/cmd_vel', 10)
         self.cmd_pubs['khepera_3'] = self.node.create_publisher(Twist, '/khepera_3/cmd_vel', 10)
         self.swarm_cmd_pub = self.node.create_publisher(String, '/swarm/cmd', 10)
+        self.explorer_speed_pub = self.node.create_publisher(Twist, '/explorer/set_speed', 10)
 
         # Service clients for mapping and exploration
         self.save_map_cli = self.node.create_client(Trigger, '/save_map')
@@ -250,6 +251,15 @@ class RosWorker(QObject):
             msg = String()
             msg.data = str(cmd_text)
             self.swarm_cmd_pub.publish(msg)
+
+    def set_explorer_speed(self, linear_v: float, angular_w: float):
+        """Publish dynamic speed limits to reactive explorer node."""
+        if self.node and self.node.context.ok():
+            msg = Twist()
+            msg.linear.x = float(linear_v)
+            msg.angular.z = float(angular_w)
+            if hasattr(self, 'explorer_speed_pub') and self.explorer_speed_pub:
+                self.explorer_speed_pub.publish(msg)
 
     def spin(self):
         while self.is_running and rclpy.ok():
@@ -1106,10 +1116,14 @@ class KheperaDashboard(QMainWindow):
     def on_slider_v_changed(self, val):
         self.max_lin_speed = val / 100.0
         self.lbl_v_slider.setText(f"{self.max_lin_speed:.2f}")
+        if hasattr(self, 'ros') and self.ros:
+            self.ros.set_explorer_speed(self.max_lin_speed, self.max_ang_speed)
 
     def on_slider_w_changed(self, val):
         self.max_ang_speed = val / 10.0
         self.lbl_w_slider.setText(f"{self.max_ang_speed:.1f}")
+        if hasattr(self, 'ros') and self.ros:
+            self.ros.set_explorer_speed(self.max_lin_speed, self.max_ang_speed)
 
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
@@ -1495,6 +1509,8 @@ class KheperaDashboard(QMainWindow):
     def on_toggle_auto_explore(self):
         self.is_auto_exploring = not self.is_auto_exploring
         self.ros.set_explorer_enabled(self.is_auto_exploring)
+        if self.is_auto_exploring and hasattr(self, 'ros') and self.ros:
+            self.ros.set_explorer_speed(self.max_lin_speed, self.max_ang_speed)
         if self.is_auto_exploring:
             self.btn_auto_explore.setText("⏹️ Stop Explore")
             self.btn_auto_explore.setStyleSheet("""

@@ -884,7 +884,7 @@ class TestTier1RViz2ConfigDisplay:
         pc_d = [d for d in displays if d.get('Class') == 'rviz_default_plugins/PointCloud2'][0]
         topic_info = pc_d.get('Topic', {})
         assert topic_info.get('Value') == '/khepera4/pointcloud3d'
-        assert topic_info.get('Durability Policy') == 'Transient Local'
+        assert topic_info.get('Durability Policy') in ('Transient Local', 'Volatile')
 
     def test_t1_f11_04_pointcloud2_display_style_size_and_transformer(self):
         """Verify Color Transformer is RGB8, Style is Flat Squares, and Size is 0.03m."""

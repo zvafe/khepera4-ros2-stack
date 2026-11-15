@@ -1,12 +1,15 @@
 import os
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, DeclareLaunchArgument, SetEnvironmentVariable, Shutdown
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable, Shutdown
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
+
 def generate_launch_description():
+    """Launch Gazebo Harmonic simulation and ROS 2 bridges for Khepera IV."""
     pkg_share = get_package_share_directory('khepera4_description')
     pkg_share_parent = os.path.dirname(pkg_share)
     urdf_path = os.path.join(pkg_share, 'urdf', 'khepera4.urdf')
@@ -42,10 +45,24 @@ def generate_launch_description():
         description='Bridge Gazebo /tf to ROS /tf (set to false when using IMU-fused odom TF)'
     )
 
+    bridge_pointcloud_arg = DeclareLaunchArgument(
+        'bridge_pointcloud',
+        default_value='false',
+        description='Bridge 3D depth pointcloud from Gazebo (default: false for high FPS)'
+    )
+
     # 1. Gazebo Harmonic Simulation World (GUI vs Headless)
+    gz_env = {
+        'QT_QPA_PLATFORM': 'xcb',
+        'QT_XCB_GL_INTEGRATION': 'glx',
+        '__NV_PRIME_RENDER_OFFLOAD': '1',
+        '__GLX_VENDOR_LIBRARY_NAME': 'nvidia',
+    }
+
     start_gazebo_gui = ExecuteProcess(
         cmd=['gz', 'sim', '-r', LaunchConfiguration('world')],
         output='screen',
+        additional_env=gz_env,
         condition=UnlessCondition(LaunchConfiguration('headless')),
         on_exit=Shutdown()
     )
@@ -53,6 +70,7 @@ def generate_launch_description():
     start_gazebo_headless = ExecuteProcess(
         cmd=['gz', 'sim', '-s', '-r', LaunchConfiguration('world')],
         output='screen',
+        additional_env=gz_env,
         condition=IfCondition(LaunchConfiguration('headless')),
         on_exit=Shutdown()
     )
@@ -100,7 +118,11 @@ def generate_launch_description():
             '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             '/camera/image_raw/image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/image_raw/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/camera/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            PythonExpression([
+                "'/camera/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked' if '",
+                LaunchConfiguration('bridge_pointcloud'),
+                "' == 'true' else '/camera/image_raw/depth_image@sensor_msgs/msg/Image[gz.msgs.Image'"
+            ]),
             '/camera/image_raw/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
@@ -140,6 +162,7 @@ def generate_launch_description():
         world_arg,
         headless_arg,
         bridge_tf_arg,
+        bridge_pointcloud_arg,
         start_gazebo_gui,
         start_gazebo_headless,
         robot_state_publisher_node,

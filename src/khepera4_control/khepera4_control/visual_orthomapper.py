@@ -52,6 +52,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import (
     CameraInfo,
     Image as RosImage,
@@ -1524,6 +1525,12 @@ class VisualOrthomapper(Node):
         if not self.publish_pointcloud_3d:
             return
 
+        # Conflict prevention: if an external node (e.g. Gazebo depth camera bridge)
+        # is already publishing point clouds on this topic, suppress synthetic generation
+        # to prevent RViz2 camera-cone flashing.
+        if self.count_publishers(self.pointcloud_topic) > 1:
+            return
+
         if self.pointcloud_builder is None:
             try:
                 from khepera4_control.pointcloud_builder import (
@@ -1880,7 +1887,7 @@ def main(args=None):
     node = VisualOrthomapper()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

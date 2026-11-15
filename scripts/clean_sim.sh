@@ -40,6 +40,9 @@ safe_kill "frontier_manager_node"
 safe_kill "semantic_reasoner_node"
 safe_kill "gaussian_mapper_node"
 safe_kill "hybrid_coordinator_node"
+safe_kill "object_detector_verifier_node"
+safe_kill "lightglue_tracker_node"
+safe_kill "ibvs_controller_node"
 
 # 2. Stop any running Docker simulation containers
 if command -v docker >/dev/null 2>&1 && [ -f "${WS_ROOT}/docker/docker-compose.yml" ]; then

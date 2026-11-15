@@ -69,8 +69,14 @@ def generate_launch_description():
 
     auto_explore_arg = DeclareLaunchArgument(
         'auto_explore',
+        default_value='false',
+        description='Start autonomous reactive exploration on startup (true/false)'
+    )
+
+    launch_explorer_arg = DeclareLaunchArgument(
+        'launch_explorer',
         default_value='true',
-        description='Launch autonomous reactive explorer (true/false)'
+        description='Launch reactive explorer node process (true/false)'
     )
 
     world_arg = DeclareLaunchArgument(
@@ -96,6 +102,13 @@ def generate_launch_description():
         default_value='auto',
         description='Use simulation clock: "true", "false", or "auto" (true for sim, false for physical/mock)'
     )
+
+    linear_speed_arg = DeclareLaunchArgument(
+        'linear_speed',
+        default_value='0.35',
+        description='Linear exploration speed in m/s (default: 0.35 for rapid full-speed mapping)'
+    )
+
 
     # Condition: Simulation Mode
     is_sim_mode = PythonExpression(["'", LaunchConfiguration('mode'), "' == 'sim'"])
@@ -205,7 +218,8 @@ def generate_launch_description():
             'visual_map_image_topic': '/visual_map/image',
             'map_publish_rate': 3.0,
             'alpha': 0.25,
-            'pitch_guard_deg': 6.0
+            'pitch_guard_deg': 6.0,
+            'publish_pointcloud_3d': True,
         }]
     )
 
@@ -217,17 +231,18 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': effective_use_sim_time,
-            'enabled': False,
-            'linear_speed': 0.12,
-            'reverse_speed': 0.05,
-            'turn_speed': 0.90,
+            'enabled': LaunchConfiguration('auto_explore'),
+            'linear_speed': LaunchConfiguration('linear_speed'),
+            'linear_speed_limit': LaunchConfiguration('linear_speed'),
+            'reverse_speed': 0.08,
+            'turn_speed': 1.10,
             'max_turn_speed': 1.50,
             'obstacle_avoid_dist': 0.40,
             'obstacle_stop_dist': 0.08,
             'cliff_backup_duration': 1.2,
             'control_rate': 20.0
         }],
-        condition=IfCondition(LaunchConfiguration('auto_explore'))
+        condition=IfCondition(LaunchConfiguration('launch_explorer'))
     )
 
     # 4. Dedicated Environment Mapping & Exploration Dashboard (Conditional)
@@ -248,6 +263,12 @@ def generate_launch_description():
         name='rviz2_mapping',
         arguments=['-d', rviz_config_path],
         parameters=[{'use_sim_time': effective_use_sim_time}],
+        additional_env={
+            'QT_QPA_PLATFORM': 'xcb',
+            'QT_XCB_GL_INTEGRATION': 'glx',
+            '__NV_PRIME_RENDER_OFFLOAD': '1',
+            '__GLX_VENDOR_LIBRARY_NAME': 'nvidia',
+        },
         condition=IfCondition(LaunchConfiguration('rviz'))
     )
 
@@ -257,10 +278,12 @@ def generate_launch_description():
         robot_port_arg,
         headless_arg,
         auto_explore_arg,
+        launch_explorer_arg,
         world_arg,
         dashboard_arg,
         rviz_arg,
         use_sim_time_arg,
+        linear_speed_arg,
         sim_launch,
         robot_state_pub_node,
         hardware_bridge_node,

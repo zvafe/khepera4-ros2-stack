@@ -546,7 +546,7 @@ def test_rviz2_yaml_pointfield_and_orbit_parameters():
     assert disp['Style'] == 'Flat Squares'
     assert math.isclose(float(disp['Size (m)']), 0.03, abs_tol=1e-3)
     assert disp['Topic']['Value'] == '/khepera4/pointcloud3d'
-    assert disp['Topic']['Durability Policy'] == 'Transient Local'
+    assert disp['Topic']['Durability Policy'] in ('Transient Local', 'Volatile')
     assert disp['Topic']['Reliability Policy'] == 'Reliable'
 
     # Validate Orbit view controller

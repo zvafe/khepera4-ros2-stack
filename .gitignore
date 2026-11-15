@@ -63,6 +63,10 @@ output/
 *.pcd
 *.ply
 *.pth
+*.pt
+weights/
+*graphify-out/
+**/maps/keyframes/
 
 # Test & coverage artifacts
 .coverage*
