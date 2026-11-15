@@ -47,6 +47,8 @@ setup(
             'khepera_visual_pursuit.lightglue_tracker_node:main',
             'ibvs_controller_node = '
             'khepera_visual_pursuit.ibvs_controller_node:main',
+            'pursuit_bt_supervisor_node = '
+            'khepera_visual_pursuit.pursuit_bt_supervisor_node:main',
         ],
     },
 )

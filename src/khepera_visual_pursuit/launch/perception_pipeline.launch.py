@@ -34,6 +34,7 @@ class PipelineLaunchConfigs:
     use_sim_time: LaunchConfiguration
     launch_controller: LaunchConfiguration
     target_image_path: LaunchConfiguration
+    launch_supervisor: LaunchConfiguration
 
 
 def _create_launch_arguments(default_params: str) -> Tuple[DeclareLaunchArgument, ...]:
@@ -53,6 +54,11 @@ def _create_launch_arguments(default_params: str) -> Tuple[DeclareLaunchArgument
             "launch_controller",
             default_value="true",
             description="Launch IBVS kinematic controller node if true.",
+        ),
+        DeclareLaunchArgument(
+            "launch_supervisor",
+            default_value="true",
+            description="Launch Behavior Tree supervisor and motion arbiter node if true.",
         ),
         DeclareLaunchArgument(
             "target_image_path",
@@ -95,7 +101,15 @@ def _create_pipeline_nodes(configs: PipelineLaunchConfigs) -> Tuple[Node, ...]:
         parameters=common_params,
         condition=IfCondition(configs.launch_controller),
     )
-    return (detector_node, tracker_node, controller_node)
+    supervisor_node = Node(
+        package="khepera_visual_pursuit",
+        executable="pursuit_bt_supervisor_node",
+        name="pursuit_bt_supervisor_node",
+        output="screen",
+        parameters=common_params,
+        condition=IfCondition(configs.launch_supervisor),
+    )
+    return (detector_node, tracker_node, controller_node, supervisor_node)
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -109,6 +123,7 @@ def generate_launch_description() -> LaunchDescription:
         use_sim_time=LaunchConfiguration("use_sim_time"),
         launch_controller=LaunchConfiguration("launch_controller"),
         target_image_path=LaunchConfiguration("target_image_path"),
+        launch_supervisor=LaunchConfiguration("launch_supervisor"),
     )
     nodes = _create_pipeline_nodes(configs)
 

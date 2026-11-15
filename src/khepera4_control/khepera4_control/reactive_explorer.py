@@ -72,6 +72,7 @@ class ReactiveExplorer(Node):
         self.declare_parameter('linear_speed_limit', 0.12)
         self.declare_parameter('angular_speed_limit', 0.90)
         self.declare_parameter('target_lost_timeout', 4.0)
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.linear_speed = float(self.get_parameter('linear_speed').value)
@@ -167,7 +168,29 @@ class ReactiveExplorer(Node):
         # ----------------------------------------------------------------------
         # Publishers & Subscribers
         # ----------------------------------------------------------------------
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        cmd_topic = str(self.get_parameter('cmd_vel_topic').value)
+        raw_cmd_pub = self.create_publisher(Twist, cmd_topic, 10)
+        self.explorer_cmd_pub = self.create_publisher(Twist, '/explorer/cmd_vel', 10)
+
+        class _CmdPublisherProxy:
+            """Proxy forwarding Twist messages to primary topic and /explorer/cmd_vel."""
+
+            def __init__(self, primary, secondary):
+                self._primary = primary
+                self._secondary = secondary
+
+            def publish(self, msg):
+                self._primary.publish(msg)
+                if self._secondary is not None:
+                    self._secondary.publish(msg)
+
+            def __getattr__(self, item):
+                return getattr(self._primary, item)
+
+        self.cmd_pub = _CmdPublisherProxy(
+            raw_cmd_pub,
+            self.explorer_cmd_pub if cmd_topic != '/explorer/cmd_vel' else None,
+        )
         self.active_goal_pub = self.create_publisher(
             PointStamped, '/explorer/active_goal', 10
         )

@@ -55,6 +55,11 @@ def _create_sim_launch_arguments(default_params: str) -> Tuple[DeclareLaunchArgu
             description="Run Gazebo Harmonic in headless mode (server only, saves ~20% CPU)",
         ),
         DeclareLaunchArgument(
+            "launch_supervisor",
+            default_value="true",
+            description="Launch Behavior Tree supervisor and motion arbiter node",
+        ),
+        DeclareLaunchArgument(
             "device",
             default_value="auto",
             description="Hardware device for perception models (auto, cuda:0, cpu)",
@@ -84,6 +89,7 @@ def _create_sim_pursuit_actions(
             "params_file": LaunchConfiguration("params_file"),
             "use_sim_time": "true",
             "launch_controller": LaunchConfiguration("launch_controller"),
+            "launch_supervisor": LaunchConfiguration("launch_supervisor"),
             "target_image_path": LaunchConfiguration("target_image_path"),
         }.items(),
     )

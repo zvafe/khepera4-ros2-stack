@@ -167,7 +167,28 @@ class IBVSControllerNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self.cmd_vel_pub = self.create_publisher(Twist, cmd_topic, 10)
+        raw_cmd_pub = self.create_publisher(Twist, cmd_topic, 10)
+        self.raw_pursuit_pub = self.create_publisher(Twist, "/pursuit/cmd_vel_raw", 10)
+
+        class _CmdPublisherProxy:
+            """Proxy forwarding Twist messages to primary topic and /pursuit/cmd_vel_raw."""
+
+            def __init__(self, primary, secondary):
+                self._primary = primary
+                self._secondary = secondary
+
+            def publish(self, msg):
+                self._primary.publish(msg)
+                if self._secondary is not None:
+                    self._secondary.publish(msg)
+
+            def __getattr__(self, item):
+                return getattr(self._primary, item)
+
+        self.cmd_vel_pub = _CmdPublisherProxy(
+            raw_cmd_pub,
+            self.raw_pursuit_pub if cmd_topic != "/pursuit/cmd_vel_raw" else None,
+        )
         self.status_pub = self.create_publisher(Bool, DEFAULT_STATUS_TOPIC, 10)
         self.stop_pub = self.create_publisher(Bool, DEFAULT_STOP_TOPIC, 10)
         self.pursuit_enable_pub = self.create_publisher(Bool, "/pursuit/enable", 10)

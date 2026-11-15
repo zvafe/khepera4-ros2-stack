@@ -35,6 +35,7 @@ Features:
 - Complete tactile click visual feedback (:hover, :pressed) on all UI buttons
 """
 
+import atexit
 import collections
 import math
 import os
@@ -884,10 +885,18 @@ class MappingRosWorker(QObject):
         if self._explorer_proc is not None:
             try:
                 if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
-                    os.killpg(os.getpgid(self._explorer_proc.pid), signal.SIGTERM)
+                    pgid = os.getpgid(self._explorer_proc.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                    try:
+                        self._explorer_proc.wait(timeout=1.0)
+                    except Exception:
+                        os.killpg(pgid, signal.SIGKILL)
                 else:
                     self._explorer_proc.terminate()
-                self._explorer_proc.wait(timeout=0.5)
+                    try:
+                        self._explorer_proc.wait(timeout=1.0)
+                    except Exception:
+                        self._explorer_proc.kill()
             except Exception:
                 try:
                     self._explorer_proc.kill()
@@ -907,7 +916,13 @@ class MappingRosWorker(QObject):
                     try:
                         pid = int(pid_str)
                         if pid != my_pid:
-                            os.kill(pid, signal.SIGKILL)
+                            if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
+                                try:
+                                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                                except Exception:
+                                    os.kill(pid, signal.SIGTERM)
+                            else:
+                                os.kill(pid, signal.SIGTERM)
                     except Exception:
                         pass
         except Exception:
@@ -916,9 +931,8 @@ class MappingRosWorker(QObject):
         self.explorer_state_received.emit(False)
 
     def _ensure_explorer_running(self) -> bool:
-        """Auto-spawn reactive_explorer if it is not currently running."""
-        if not self.auto_spawn_explorer:
-            return False
+        """Verify explorer is running; spawn fallback subprocess only if absent from graph."""
+        # 1. First check if node is already launched in ROS 2 graph
         if self.node and self.node.context.ok():
             try:
                 node_names = self.node.get_node_names()
@@ -926,8 +940,12 @@ class MappingRosWorker(QObject):
                     return True
             except Exception:
                 pass
+        # 2. Check if local tracked subprocess is already running
         if self._explorer_proc is not None and self._explorer_proc.poll() is None:
             return True
+        if not self.auto_spawn_explorer:
+            return False
+        # 3. Fallback: Spawn with isolated process group
         try:
             use_sim = False
             if self.node and self.node.has_parameter('use_sim_time'):
@@ -944,7 +962,7 @@ class MappingRosWorker(QObject):
                 stderr=subprocess.DEVNULL,
                 preexec_fn=os.setsid if hasattr(os, 'setsid') else None
             )
-            self.feedback_received.emit("[Explorer] Auto-spawning reactive explorer...")
+            self.feedback_received.emit("[Explorer] Auto-spawning reactive explorer (fallback)...")
             return True
         except Exception as e:
             self.feedback_received.emit(f"[Error] Failed to auto-spawn explorer: {e}")
@@ -4683,6 +4701,23 @@ def main(args=None):
     ros_worker = MappingRosWorker()
     ros_worker.init_ros()
 
+    # Best Practice: Register atexit and signal handlers to guarantee child process cleanup
+    atexit.register(ros_worker.kill_explorer_instances)
+    atexit.register(ros_worker.stop)
+
+    def _sig_handler(signum, frame):
+        ros_worker.kill_explorer_instances()
+        ros_worker.stop()
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
+    except Exception:
+        pass
+
     ros_thread = threading.Thread(target=ros_worker.spin, daemon=True)
     ros_thread.start()
 
@@ -4690,6 +4725,7 @@ def main(args=None):
     window.show()
 
     ret = app.exec_()
+    ros_worker.kill_explorer_instances()
     ros_worker.stop()
     if rclpy.ok():
         rclpy.shutdown()
