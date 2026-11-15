@@ -886,17 +886,17 @@ class MappingRosWorker(QObject):
             try:
                 if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
                     pgid = os.getpgid(self._explorer_proc.pid)
-                    os.killpg(pgid, signal.SIGTERM)
-                    try:
-                        self._explorer_proc.wait(timeout=1.0)
-                    except Exception:
-                        os.killpg(pgid, signal.SIGKILL)
+                    # Only killpg if this pgid is strictly an isolated child process group
+                    if pgid != os.getpgrp() and pgid != os.getpid():
+                        os.killpg(pgid, signal.SIGTERM)
+                        try:
+                            self._explorer_proc.wait(timeout=0.5)
+                        except Exception:
+                            os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        self._explorer_proc.terminate()
                 else:
                     self._explorer_proc.terminate()
-                    try:
-                        self._explorer_proc.wait(timeout=1.0)
-                    except Exception:
-                        self._explorer_proc.kill()
             except Exception:
                 try:
                     self._explorer_proc.kill()
@@ -909,20 +909,17 @@ class MappingRosWorker(QObject):
                 ["pgrep", "-f", "khepera4_control.*reactive_explorer"],
                 capture_output=True,
                 text=True,
+                timeout=1.0,
             )
             if out.stdout:
                 my_pid = os.getpid()
+                my_ppid = os.getppid()
                 for pid_str in out.stdout.split():
                     try:
                         pid = int(pid_str)
-                        if pid != my_pid:
-                            if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
-                                try:
-                                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                                except Exception:
-                                    os.kill(pid, signal.SIGTERM)
-                            else:
-                                os.kill(pid, signal.SIGTERM)
+                        if pid != my_pid and pid != my_ppid:
+                            # Terminate specific PID directly; never kill parent or launch group
+                            os.kill(pid, signal.SIGTERM)
                     except Exception:
                         pass
         except Exception:
@@ -2805,6 +2802,24 @@ class MappingDashboardWindow(QMainWindow):
                 hasattr(self, 'radio_mode_semantic') and self.radio_mode_semantic.isChecked()
             )
 
+        # Thread safety: extract all GUI widget states on main thread
+        shape_str = (
+            self.combo_target_shape.currentText().lower()
+            if hasattr(self, 'combo_target_shape') else ""
+        )
+        col = getattr(self, 'selected_target_color', QColor(225, 29, 72))
+        col_r, col_g, col_b = col.redF(), col.greenF(), col.blueF()
+
+        effective_img = img_path
+        if (effective_img is None or not os.path.isfile(effective_img)) and hasattr(
+            self, 'edit_target_img_path'
+        ):
+            effective_img = self.edit_target_img_path.text().strip()
+        if not effective_img or not os.path.isfile(effective_img):
+            default_path = self._get_default_target_template_path()
+            if default_path and os.path.isfile(default_path):
+                effective_img = default_path
+
         def _spawn_bg():
             target_dir = "/tmp/khepera4_target"
             os.makedirs(target_dir, exist_ok=True)
@@ -2822,10 +2837,6 @@ class MappingDashboardWindow(QMainWindow):
             has_texture = False
             if is_mode_a:
                 # Option A: Do NOT use custom image when deploying/spawning for Option A
-                shape_str = (
-                    self.combo_target_shape.currentText().lower()
-                    if hasattr(self, 'combo_target_shape') else ""
-                )
                 if "cylinder" in shape_str:
                     geom_xml = "<cylinder><radius>0.05</radius><length>0.12</length></cylinder>"
                 elif "cube" in shape_str or "box" in shape_str:
@@ -2839,23 +2850,14 @@ class MappingDashboardWindow(QMainWindow):
                 else:
                     geom_xml = "<box><size>0.12 0.12 0.12</size></box>"
 
-                col = getattr(self, 'selected_target_color', QColor(225, 29, 72))
-                r, g, b = col.redF(), col.greenF(), col.blueF()
                 mat_xml = f"""<material>
-          <ambient>{r:.3f} {g:.3f} {b:.3f} 1.0</ambient>
-          <diffuse>{r:.3f} {g:.3f} {b:.3f} 1.0</diffuse>
+          <ambient>{col_r:.3f} {col_g:.3f} {col_b:.3f} 1.0</ambient>
+          <diffuse>{col_r:.3f} {col_g:.3f} {col_b:.3f} 1.0</diffuse>
           <specular>0.3 0.3 0.3 1.0</specular>
         </material>"""
             else:
                 # Option B: Input a template image and wrap it around a cube as a texture
                 geom_xml = "<box><size>0.12 0.12 0.12</size></box>"
-                effective_img = img_path
-                if (effective_img is None or not os.path.isfile(effective_img)) and hasattr(self, 'edit_target_img_path'):
-                    effective_img = self.edit_target_img_path.text().strip()
-                if not effective_img or not os.path.isfile(effective_img):
-                    default_path = self._get_default_target_template_path()
-                    if default_path and os.path.isfile(default_path):
-                        effective_img = default_path
 
                 # Unique timestamp filename to bust Ogre2 GPU texture cache
                 ts = int(time.time() * 1000)
@@ -4706,11 +4708,7 @@ def main(args=None):
     atexit.register(ros_worker.stop)
 
     def _sig_handler(signum, frame):
-        ros_worker.kill_explorer_instances()
-        ros_worker.stop()
-        if rclpy.ok():
-            rclpy.shutdown()
-        sys.exit(0)
+        app.quit()
 
     try:
         signal.signal(signal.SIGINT, _sig_handler)

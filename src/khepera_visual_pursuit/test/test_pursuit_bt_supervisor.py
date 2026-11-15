@@ -86,6 +86,7 @@ def test_visual_pursuit_preemption_and_topic_gating():
 
     try:
         node.explorer_enabled = True
+        node.pursuit_enabled = True
 
         # Provide both explorer and pursuit commands
         exp_twist = Twist()
@@ -106,6 +107,38 @@ def test_visual_pursuit_preemption_and_topic_gating():
         assert published_cmds[-1].linear.x == pytest.approx(0.08, rel=1e-2)
         assert published_cmds[-1].angular.z == pytest.approx(-0.30, rel=1e-2)
         assert False in explorer_enables
+    finally:
+        node.destroy_node()
+
+
+def test_target_detected_while_pursuit_disabled_does_not_pursue():
+    """Verify target detection does not engage pursuit when pursuit_enabled is False."""
+    node = PursuitBTSupervisorNode()
+    published_cmds = []
+    node.cmd_vel_pub.publish = lambda m: published_cmds.append(m)
+
+    try:
+        node.explorer_enabled = True
+        node.pursuit_enabled = False  # Pursuit explicitly NOT enabled
+
+        exp_twist = Twist()
+        exp_twist.linear.x = 0.09
+        exp_twist.angular.z = 0.20
+        node._on_explorer_cmd(exp_twist)
+
+        pursuit_twist = Twist()
+        pursuit_twist.linear.x = 0.15
+        node._on_pursuit_cmd(pursuit_twist)
+
+        # Target is detected by camera/verifier
+        node._on_target_status(Bool(data=True))
+        node._on_supervision_cycle()
+
+        # Must remain in exploration, NOT visual pursuit!
+        assert node.current_state == STATE_FRONTIER_EXPLORATION
+        assert not node.pursuit_enabled
+        assert len(published_cmds) > 0
+        assert published_cmds[-1].linear.x == pytest.approx(0.09, rel=1e-2)
     finally:
         node.destroy_node()
 

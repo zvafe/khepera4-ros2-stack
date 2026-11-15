@@ -266,9 +266,11 @@ class PursuitBTSupervisorNode(Node):
 
         # Check for arrival at 5 cm surface standoff
         is_in_pursuit_mode = bool(
-            self.current_state in (STATE_VISUAL_PURSUIT, STATE_TARGET_RECOVERY)
-            or self.pursuit_enabled
-            or is_target_active
+            self.pursuit_enabled
+            and (
+                self.current_state in (STATE_VISUAL_PURSUIT, STATE_TARGET_RECOVERY)
+                or is_target_active
+            )
         )
         if is_in_pursuit_mode and self.latest_frontal_distance <= stop_cutoff:
             self.terminal_stop_ticks += 1
@@ -287,15 +289,12 @@ class PursuitBTSupervisorNode(Node):
             self.terminal_stop_ticks = 0
 
         # ----------------------------------------------------------------------
-        # Branch 2: Visual Pursuit (Target Confirmed & In View)
+        # Branch 2: Visual Pursuit (Target Confirmed & In View, Pursuit Enabled)
         # ----------------------------------------------------------------------
-        if is_target_active:
+        if self.pursuit_enabled and is_target_active:
             self.current_state = STATE_VISUAL_PURSUIT
-            if not self.pursuit_enabled:
-                self.pursuit_enabled = True
-                self.pursuit_enable_pub.publish(Bool(data=True))
 
-            # Suppress exploration layer
+            # Suppress exploration layer while actively pursuing target
             if self.explorer_enabled:
                 self.explorer_enable_pub.publish(Bool(data=False))
 
