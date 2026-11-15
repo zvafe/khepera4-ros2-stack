@@ -71,6 +71,7 @@ class ReactiveExplorer(Node):
         self.declare_parameter('stall_timeout', 0.35)
         self.declare_parameter('linear_speed_limit', 0.12)
         self.declare_parameter('angular_speed_limit', 0.90)
+        self.declare_parameter('target_lost_timeout', 4.0)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.linear_speed = float(self.get_parameter('linear_speed').value)
@@ -78,6 +79,9 @@ class ReactiveExplorer(Node):
         self.turn_speed = float(self.get_parameter('turn_speed').value)
         self.max_turn_speed = float(
             self.get_parameter('max_turn_speed').value
+        )
+        self.target_lost_timeout = float(
+            self.get_parameter('target_lost_timeout').value
         )
         self.avoid_dist = float(
             self.get_parameter('obstacle_avoid_dist').value
@@ -192,6 +196,9 @@ class ReactiveExplorer(Node):
         self.speed_limits_sub = self.create_subscription(
             Twist, '/explorer/set_speed_limits', self.speed_callback, 10
         )
+        self.robot_speed_limits_sub = self.create_subscription(
+            Twist, '/robot/speed_limits', self.speed_callback, 10
+        )
         self._last_thought_text = ""
         self._last_thought_time = 0.0
 
@@ -301,28 +308,34 @@ class ReactiveExplorer(Node):
 
     def speed_callback(self, msg: Twist) -> None:
         """Update linear and angular speeds dynamically from teleoperation sliders or topic."""
-        if msg.linear.x > 0.01:
+        if msg.linear.x > 0.001:
             self.linear_speed = float(msg.linear.x)
-        if msg.angular.z > 0.01:
+            self.linear_speed_limit = float(msg.linear.x)
+        if msg.angular.z > 0.001:
             self.turn_speed = float(msg.angular.z)
             self.max_turn_speed = max(self.turn_speed * 1.5, 1.5)
+            self.angular_speed_limit = float(msg.angular.z)
 
     def _on_set_parameters(self, params: List[Parameter]) -> SetParametersResult:
         """Handle dynamic parameter reconfigurations for exploration speed limits."""
         for param in params:
             if param.name in ('linear_speed', 'linear_speed_limit'):
                 val = float(param.value)
-                if val > 0.01:
+                if val > 0.001:
                     self.linear_speed = val
+                    self.linear_speed_limit = val
             elif param.name in ('turn_speed', 'angular_speed_limit'):
                 val = float(param.value)
-                if val > 0.01:
+                if val > 0.001:
                     self.turn_speed = val
                     self.max_turn_speed = max(self.turn_speed * 1.5, 1.5)
+                    self.angular_speed_limit = val
             elif param.name == 'max_turn_speed':
                 val = float(param.value)
-                if val > 0.01:
+                if val > 0.001:
                     self.max_turn_speed = val
+            elif param.name == 'target_lost_timeout':
+                self.target_lost_timeout = float(param.value)
         thought = (
             f"⚡ Exploration Speed Limits Reconfigured: Cruise v = {self.linear_speed:.2f} m/s, "
             f"Turn Rate ω = {self.turn_speed:.2f} rad/s"
@@ -353,12 +366,20 @@ class ReactiveExplorer(Node):
             if not self.target_stopped:
                 self.target_in_sight = False
                 self.get_logger().info(
-                    'Visual pursuit enabled. Starting active exploration search for target.'
+                    'Visual pursuit enabled. Starting 360° survey and active exploration search.'
                 )
                 self.publish_thought(
-                    '🚀 Pursuit enabled: Starting fast active exploration search for target.'
+                    '🚀 Pursuit enabled: Executing 360° survey to map frontiers and scan for target.',
+                    force=True
                 )
                 self._set_enabled(True, 'topic /pursuit/enable')
+                self.state = self.STATE_INITIAL_SPIN
+                self.state_start_time = self._get_current_time()
+                self.initial_spin_done = False
+                self.spin_cumulative_yaw = 0.0
+                self.spin_last_yaw = self.current_yaw
+                self.active_goal = None
+                self.frontier_waypoints.clear()
         elif not self.pursuit_active:
             self.target_in_sight = False
             if was_active:
@@ -389,13 +410,18 @@ class ReactiveExplorer(Node):
             now = self._get_current_time()
             if self.target_lost_time is None:
                 self.target_lost_time = now
-            elif (now - self.target_lost_time) > 4.0:
+            if (
+                self.target_lost_timeout <= 0.0
+                or (now - self.target_lost_time) >= self.target_lost_timeout
+            ):
                 if self.target_in_sight:
                     self.target_in_sight = False
                     self.get_logger().info(
-                        'Target lost from visual sight for > 4.0s. Resuming active exploration search.'
+                        'Target lost from visual sight. Resuming active exploration search.'
                     )
-                    self.publish_thought('🔍 Target out of sight. Resuming active exploration search.')
+                    self.publish_thought(
+                        '🔍 Target out of sight. Resuming active exploration search.'
+                    )
 
     def publish_thought(self, text: str, force: bool = False) -> None:
         """Publish cognitive reasoning log for dashboard telemetry."""
@@ -1442,17 +1468,27 @@ class ReactiveExplorer(Node):
 
             if self.spin_cumulative_yaw >= (2.0 * math.pi - 0.05) or elapsed_state > 12.0:
                 self.get_logger().info(
-                    'Initial 360° survey completed. Seeding SLAM map and starting frontier exploration.'
-                )
-                self.publish_thought(
-                    "Initial 360° survey completed. Beginning room frontier exploration.",
-                    force=True
+                    'Initial 360° survey completed. Seeding SLAM map and mapping frontiers.'
                 )
                 self.initial_spin_done = True
                 self.state = self.STATE_CRUISE
                 self.state_start_time = now
                 self.stall_start_time = None
-                self.active_goal = None
+                self.active_goal = self._select_exploration_target()
+                self.goal_start_time = now
+                self._publish_active_goal()
+                self._publish_frontier_markers()
+                if self.active_goal is not None:
+                    self.publish_thought(
+                        f"🔭 360° survey complete. Mapped frontiers from SLAM map. "
+                        f"Navigating to frontier at ({self.active_goal[0]:+.2f}, {self.active_goal[1]:+.2f}).",
+                        force=True
+                    )
+                else:
+                    self.publish_thought(
+                        "360° survey complete. Beginning room frontier exploration.",
+                        force=True
+                    )
             else:
                 cmd.linear.x = 0.0
                 cmd.angular.z = self.initial_spin_speed
@@ -1498,7 +1534,7 @@ class ReactiveExplorer(Node):
                 self.escape_turn_dir = 1.0 if d_left >= d_right else -1.0
             self.stall_start_time = None
             cmd.linear.x = -self.reverse_speed
-            cmd.angular.z = self.escape_turn_dir * max(self.turn_speed, 1.2)
+            cmd.angular.z = self.escape_turn_dir * self.turn_speed
             self.last_commanded_v = cmd.linear.x
             self.cmd_pub.publish(cmd)
             return
@@ -1558,9 +1594,7 @@ class ReactiveExplorer(Node):
                 self.stall_start_time = None
                 self.stall_ticks = 0
                 cmd.linear.x = -self.reverse_speed
-                cmd.angular.z = self.escape_turn_dir * max(
-                    self.turn_speed, 1.2
-                )
+                cmd.angular.z = self.escape_turn_dir * self.turn_speed
                 self.last_commanded_v = cmd.linear.x
                 self.cmd_pub.publish(cmd)
                 return
@@ -1577,7 +1611,7 @@ class ReactiveExplorer(Node):
             self.reverse_turn_initial_yaw = self.current_yaw
             self.escape_turn_dir = 1.0 if d_left >= d_right else -1.0
             cmd.linear.x = -self.reverse_speed
-            cmd.angular.z = self.escape_turn_dir * max(self.turn_speed, 1.2)
+            cmd.angular.z = self.escape_turn_dir * self.turn_speed
             self.last_commanded_v = cmd.linear.x
             self.cmd_pub.publish(cmd)
             return
@@ -1767,7 +1801,7 @@ class ReactiveExplorer(Node):
             if now > getattr(self, 'front_steer_lock_time', 0.0):
                 self.front_steer_dir = 1.0 if d_left >= d_right else -1.0
                 self.front_steer_lock_time = now + 0.8
-            target_w = self.front_steer_dir * max(self.turn_speed, 1.2)
+            target_w = self.front_steer_dir * self.turn_speed
         elif d_front < slow_dist:
             u = (d_front - safe_dist) / (slow_dist - safe_dist)
             speed_factor = max(0.35, u)  # Smooth linear deceleration, maintaining momentum
@@ -1783,6 +1817,7 @@ class ReactiveExplorer(Node):
         # Maintain positive forward speed when heading towards target with clear path ahead
         if d_front > 0.30 and abs(goal_err) < 0.8 and w_front < 0.25:
             target_v = max(target_v, min(self.linear_speed, 0.35))
+        target_v = min(target_v, self.linear_speed)
 
         if target_v < 1e-4:
             target_v = 0.0

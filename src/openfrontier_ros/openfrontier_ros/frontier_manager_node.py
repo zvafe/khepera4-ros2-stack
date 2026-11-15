@@ -111,6 +111,26 @@ class FrontierManagerNode(Node):
             "/cmd_vel",
             10
         )
+        self._speed_sub = self.create_subscription(
+            Twist,
+            "/robot/speed_limits",
+            self._handle_speed_limits,
+            10
+        )
+        self._explorer_speed_sub = self.create_subscription(
+            Twist,
+            "/explorer/set_speed_limits",
+            self._handle_speed_limits,
+            10
+        )
+
+    def _handle_speed_limits(self, msg: Twist) -> None:
+        """Update linear exploration speed limit dynamically from speed dial."""
+        if msg.linear.x > 0.001:
+            self._linear_speed = float(msg.linear.x)
+            self.get_logger().info(
+                f"FrontierManager linear speed updated: {self._linear_speed:.2f} m/s"
+            )
 
         # Cyclic exploration & control timer (10 Hz)
         self._control_timer = self.create_timer(0.1, self._handle_control_cycle)

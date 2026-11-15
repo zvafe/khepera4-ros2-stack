@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 try:
     from geometry_msgs.msg import Point32, Polygon, PolygonStamped, Twist, Vector3
+    from rcl_interfaces.msg import SetParametersResult
     import rclpy
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
+    from rclpy.parameter import Parameter
     from sensor_msgs.msg import Image, LaserScan
     from std_msgs.msg import Bool, Float32, Header, String
     from vision_msgs.msg import (
@@ -39,6 +41,22 @@ try:
 except ImportError:
     ROS2_AVAILABLE = False
     logger.debug("ROS 2 libraries not found. Operating with compatibility classes.")
+
+    class SetParametersResult:
+        """Fallback for rcl_interfaces.msg.SetParametersResult."""
+
+        def __init__(self, successful: bool = True, reason: str = "") -> None:
+            """Initialize SetParametersResult."""
+            self.successful = successful
+            self.reason = reason
+
+    class Parameter:
+        """Fallback for rclpy.parameter.Parameter."""
+
+        def __init__(self, name: str = "", value: Any = None) -> None:
+            """Initialize Parameter."""
+            self.name = name
+            self.value = value
 
     class ExternalShutdownException(Exception):
         """Fallback for rclpy.executors.ExternalShutdownException."""

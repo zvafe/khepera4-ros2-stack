@@ -25,7 +25,8 @@ DEFAULT_OMEGA_MAX: float = 0.8
 DEFAULT_DESIRED_AREA_FRACTION: float = 0.15
 DEFAULT_MIN_CONFIDENCE: float = 0.35
 DEFAULT_REVERSE_SWEEP_OMEGA: float = 0.2
-DEFAULT_OBSTACLE_STOP_DISTANCE: float = 0.05
+DEFAULT_OBSTACLE_STOP_DISTANCE: float = 0.15
+DEFAULT_CREEP_VELOCITY: float = 0.025
 MIN_SCALE_AREA: float = 1e-4
 
 
@@ -41,6 +42,7 @@ class IBVSGains:
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
     reverse_sweep_omega: float = DEFAULT_REVERSE_SWEEP_OMEGA
     obstacle_stop_distance: float = DEFAULT_OBSTACLE_STOP_DISTANCE
+    creep_velocity: float = DEFAULT_CREEP_VELOCITY
 
 
 @dataclass(frozen=True)
@@ -80,7 +82,7 @@ class IBVSController:
         """
         norm_x, area_frac, confidence = target_state
 
-        # Stop 5 cm in front of the target (target 5.0 ± 1.0 cm, threshold 0.051 m)
+        # Terminal Standoff Precision: Stop when frontal proximity sensor reaches d <= 0.15 m
         if obstacle_distance <= (self.gains.obstacle_stop_distance + 0.001):
             return self._build_emergency_stop_command()
 
@@ -102,14 +104,21 @@ class IBVSController:
         )
         self.last_omega = total_omega
 
-        # Smooth deceleration when approaching within 0.30 m of frontal target
+        # Terminal Standoff Precision: Calibrated approach law preventing premature stall
+        # when target fills the camera field of view, maintaining controlled creep (0.025 m/s)
+        # until the high-precision frontal proximity sensor reaches d_obstacle <= 0.15 m.
         linear_v = cmd.linear_x
-        slow_dist = 0.30
+        slow_dist = 0.35
+        creep_v = self.gains.creep_velocity
         if obstacle_distance < slow_dist:
-            dist_remaining = obstacle_distance - self.gains.obstacle_stop_distance
-            ratio = max(0.0, dist_remaining / max(1e-4, slow_dist - self.gains.obstacle_stop_distance))
-            # Modulate speed towards terminal creep velocity (0.025 m/s) down to 5.0 cm stop
-            linear_v = max(0.025, min(linear_v, 0.06 * ratio + 0.025))
+            dist_remaining = max(0.0, obstacle_distance - self.gains.obstacle_stop_distance)
+            ratio = dist_remaining / max(1e-4, slow_dist - self.gains.obstacle_stop_distance)
+            target_v = 0.06 * ratio + creep_v
+            effective_v = linear_v if linear_v > 0.0 else creep_v
+            linear_v = max(creep_v, min(effective_v, target_v))
+        elif linear_v <= 0.0 and area_frac >= self.gains.desired_area_fraction and area_frac > 0.30:
+            # Target fills camera FOV while obstacle_distance >= slow_dist: maintain creep
+            linear_v = creep_v
 
         return TwistCommand(
             linear_x=float(linear_v),

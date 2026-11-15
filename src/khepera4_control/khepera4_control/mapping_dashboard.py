@@ -38,6 +38,7 @@ Features:
 import collections
 import math
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -641,6 +642,12 @@ class MappingRosWorker(QObject):
         self.explorer_speed_limits_pub = self.node.create_publisher(
             Twist, '/explorer/set_speed_limits', 10
         )
+        self.pursuit_speed_limits_pub = self.node.create_publisher(
+            Twist, '/pursuit/set_speed_limits', 10
+        )
+        self.robot_speed_limits_pub = self.node.create_publisher(
+            Twist, '/robot/speed_limits', 10
+        )
         self.target_image_pub = self.node.create_publisher(RosImage, '/pursuit/target_image', 10)
         self.target_prompt_pub = self.node.create_publisher(String, '/pursuit/target_prompt', 10)
         self.pursuit_mode_pub = self.node.create_publisher(String, '/pursuit/mode', 10)
@@ -801,16 +808,25 @@ class MappingRosWorker(QObject):
             msg.angular.z = float(angular_w)
             self.cmd_pub.publish(msg)
 
-    def set_explorer_speed(self, linear_v: float, angular_w: float):
-        """Publish dynamic speed limits to reactive explorer node."""
+    def set_robot_speed(self, linear_v: float, angular_w: float):
+        """Publish dynamic speed limits across all robot algorithms."""
         if self.node and self.node.context.ok():
             msg = Twist()
             msg.linear.x = float(linear_v)
             msg.angular.z = float(angular_w)
+            if hasattr(self, 'robot_speed_limits_pub') and self.robot_speed_limits_pub:
+                self.robot_speed_limits_pub.publish(msg)
             if hasattr(self, 'explorer_speed_pub') and self.explorer_speed_pub:
                 self.explorer_speed_pub.publish(msg)
             if hasattr(self, 'explorer_speed_limits_pub') and self.explorer_speed_limits_pub:
                 self.explorer_speed_limits_pub.publish(msg)
+            if hasattr(self, 'pursuit_speed_limits_pub') and self.pursuit_speed_limits_pub:
+                self.pursuit_speed_limits_pub.publish(msg)
+        self.set_explorer_speed(linear_v, angular_w)
+
+    def set_explorer_speed(self, linear_v: float, angular_w: float):
+        """Publish dynamic speed limits (alias for backward compatibility)."""
+        pass
 
     def publish_target_image(self, img_msg: RosImage):
         """Publish reference target template image for visual pursuit verification."""
@@ -858,10 +874,58 @@ class MappingRosWorker(QObject):
             msg.data = bool(enable)
             self.pursuit_enable_pub.publish(msg)
 
+    def kill_explorer_instances(self):
+        """Immediately stop and kill all active reactive_explorer instances."""
+        if self.cmd_pub and self.node and self.node.context.ok():
+            self.cmd_pub.publish(Twist())
+        if self.explorer_enable_pub and self.node and self.node.context.ok():
+            self.explorer_enable_pub.publish(Bool(data=False))
+
+        if self._explorer_proc is not None:
+            try:
+                if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
+                    os.killpg(os.getpgid(self._explorer_proc.pid), signal.SIGTERM)
+                else:
+                    self._explorer_proc.terminate()
+                self._explorer_proc.wait(timeout=0.5)
+            except Exception:
+                try:
+                    self._explorer_proc.kill()
+                except Exception:
+                    pass
+            self._explorer_proc = None
+
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", "khepera4_control.*reactive_explorer"],
+                capture_output=True,
+                text=True,
+            )
+            if out.stdout:
+                my_pid = os.getpid()
+                for pid_str in out.stdout.split():
+                    try:
+                        pid = int(pid_str)
+                        if pid != my_pid:
+                            os.kill(pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        self.feedback_received.emit("[Explorer] Terminated all active explorer instances.")
+        self.explorer_state_received.emit(False)
+
     def _ensure_explorer_running(self) -> bool:
         """Auto-spawn reactive_explorer if it is not currently running."""
         if not self.auto_spawn_explorer:
             return False
+        if self.node and self.node.context.ok():
+            try:
+                node_names = self.node.get_node_names()
+                if "reactive_explorer" in node_names:
+                    return True
+            except Exception:
+                pass
         if self._explorer_proc is not None and self._explorer_proc.poll() is None:
             return True
         try:
@@ -887,7 +951,11 @@ class MappingRosWorker(QObject):
             return False
 
     def set_auto_explore(self, enable: bool):
-        """Call /set_explorer service and publish to /explorer/enable."""
+        """Call /set_explorer service and publish to /explorer/enable or kill instances."""
+        if not enable:
+            self.kill_explorer_instances()
+            return
+
         if self.node and self.explorer_enable_pub and self.node.context.ok():
             bmsg = Bool()
             bmsg.data = bool(enable)
@@ -2145,13 +2213,13 @@ class MappingDashboardWindow(QMainWindow):
         self.max_linear_speed = val / 100.0
         self.lbl_v_val.setText(f"{self.max_linear_speed:.2f} m/s")
         if self.ros:
-            self.ros.set_explorer_speed(self.max_linear_speed, self.max_angular_speed)
+            self.ros.set_robot_speed(self.max_linear_speed, self.max_angular_speed)
 
     def on_w_slider_changed(self, val: int):
         self.max_angular_speed = val / 100.0
         self.lbl_w_val.setText(f"{self.max_angular_speed:.2f} rad/s")
         if self.ros:
-            self.ros.set_explorer_speed(self.max_linear_speed, self.max_angular_speed)
+            self.ros.set_robot_speed(self.max_linear_speed, self.max_angular_speed)
 
     # --------------------------------------------------------------------------
     # Interactive D-Pad & Keyboard Event Handling
@@ -2172,7 +2240,7 @@ class MappingDashboardWindow(QMainWindow):
         if self.is_auto_exploring:
             self.on_toggle_auto_explore()
         if self.ros:
-            self.ros.publish_cmd(0.0, 0.0)
+            self.ros.kill_explorer_instances()
         self.lbl_teleop_cmd.setText("Cmd: v = +0.00 m/s | ω = +0.00 rad/s [STOPPED]")
 
     def _is_text_input_focused(self, widget: Optional[QObject] = None) -> bool:
@@ -2339,8 +2407,7 @@ class MappingDashboardWindow(QMainWindow):
         if self.ros:
             self.ros.set_auto_explore(new_state)
             if new_state:
-                quick_v = max(0.35, self.max_linear_speed)
-                self.ros.set_explorer_speed(quick_v, self.max_angular_speed)
+                self.ros.set_robot_speed(self.max_linear_speed, self.max_angular_speed)
 
         if new_state:
             self.btn_auto_explore.setObjectName("auto_explore_active")
@@ -2528,6 +2595,8 @@ class MappingDashboardWindow(QMainWindow):
         )
 
         if new_state:
+            if self.ros:
+                self.ros._ensure_explorer_running()
 
             tx, ty = (1.50, 0.00)
             if hasattr(self, 'target_pose') and self.target_pose is not None:
@@ -2577,7 +2646,7 @@ class MappingDashboardWindow(QMainWindow):
         else:
             if self.ros:
                 self.ros.set_pursuit_enable(False)
-                self.ros.publish_cmd(0.0, 0.0)
+                self.ros.kill_explorer_instances()
             self.on_thinking_log_received("[Pursuit] Target pursuit disengaged.")
             if hasattr(self, 'lbl_thinking_motion_badge'):
                 self.lbl_thinking_motion_badge.setText("MANUAL_OR_IDLE")
@@ -2684,7 +2753,8 @@ class MappingDashboardWindow(QMainWindow):
         x: Optional[float] = None,
         y: Optional[float] = None,
         yaw: float = 0.0,
-        force_option_a: bool = False
+        force_option_a: bool = False,
+        force_option_b: bool = False
     ):
         """Generate SDF model and spawn/replace in Gazebo Sim.
 
@@ -2706,15 +2776,30 @@ class MappingDashboardWindow(QMainWindow):
                 else "Target Object"
             )
 
-        is_mode_a = force_option_a or (
-            hasattr(self, 'radio_mode_semantic') and self.radio_mode_semantic.isChecked()
-        )
+        if force_option_b:
+            is_mode_a = False
+        elif force_option_a:
+            is_mode_a = True
+        elif img_path is not None and os.path.isfile(img_path):
+            is_mode_a = False
+        else:
+            is_mode_a = (
+                hasattr(self, 'radio_mode_semantic') and self.radio_mode_semantic.isChecked()
+            )
 
         def _spawn_bg():
             target_dir = "/tmp/khepera4_target"
             os.makedirs(target_dir, exist_ok=True)
-            tex_file = os.path.join(target_dir, "target_texture.png")
+            model_config_file = os.path.join(target_dir, "model.config")
             sdf_file = os.path.join(target_dir, "target.sdf")
+            with open(model_config_file, "w", encoding="utf-8") as f:
+                f.write("""<?xml version="1.0"?>
+<model>
+  <name>custom_target_object</name>
+  <version>1.0</version>
+  <sdf version="1.8">target.sdf</sdf>
+  <description>Custom Target Object</description>
+</model>""")
 
             has_texture = False
             if is_mode_a:
@@ -2754,6 +2839,11 @@ class MappingDashboardWindow(QMainWindow):
                     if default_path and os.path.isfile(default_path):
                         effective_img = default_path
 
+                # Unique timestamp filename to bust Ogre2 GPU texture cache
+                ts = int(time.time() * 1000)
+                tex_file = os.path.join(target_dir, f"target_texture_{ts}.png")
+                canonical_tex = os.path.join(target_dir, "target_texture.png")
+
                 if effective_img and os.path.isfile(effective_img):
                     try:
                         src_img = cv2.imread(effective_img)
@@ -2766,6 +2856,7 @@ class MappingDashboardWindow(QMainWindow):
                                 src_img, (new_w, new_h), interpolation=cv2.INTER_AREA
                             )
                             cv2.imwrite(tex_file, resized)
+                            cv2.imwrite(canonical_tex, resized)
                             has_texture = True
                     except Exception:
                         has_texture = False
@@ -2819,20 +2910,37 @@ class MappingDashboardWindow(QMainWindow):
             with open(sdf_file, "w", encoding="utf-8") as f:
                 f.write(sdf_content)
 
+            # Discover active Gazebo world name dynamically
+            world_name = "khepera4_world"
+            try:
+                proc = subprocess.run(
+                    ['gz', 'service', '-l'],
+                    capture_output=True, text=True, timeout=2.0
+                )
+                for line in proc.stdout.splitlines():
+                    parts = line.strip().split('/')
+                    if len(parts) >= 4 and parts[1] == 'world' and parts[3] in ('create', 'remove'):
+                        world_name = parts[2]
+                        break
+            except Exception:
+                pass
+
             # Remove previous target instance from world if it exists
             subprocess.run([
                 'gz', 'service',
-                '-s', '/world/khepera4_world/remove',
+                '-s', f'/world/{world_name}/remove',
                 '--reqtype', 'gz.msgs.Entity',
                 '--reptype', 'gz.msgs.Boolean',
                 '--timeout', '2000',
                 '--req', 'name: "custom_target_object" type: MODEL'
             ], capture_output=True, timeout=3.0)
 
+            time.sleep(0.15)  # Allow Gazebo one simulation cycle to finalize entity deletion
+
             # Create new model
             subprocess.run([
                 'gz', 'service',
-                '-s', '/world/khepera4_world/create',
+                '-s', f'/world/{world_name}/create',
                 '--reqtype', 'gz.msgs.EntityFactory',
                 '--reptype', 'gz.msgs.Boolean',
                 '--timeout', '2500',
@@ -3504,8 +3612,13 @@ class MappingDashboardWindow(QMainWindow):
             self.btn_deploy_template.setText("✓ Deployed!")
             QTimer.singleShot(2000, lambda: self.btn_deploy_template.setText("🚀 Deploy Template"))
 
+        if hasattr(self, 'radio_mode_template'):
+            self.radio_mode_template.setChecked(True)
+
         # Spawn or update textured target in Gazebo simulation
-        self._ensure_textured_gazebo_target(img_path=path, target_name=target_name)
+        self._ensure_textured_gazebo_target(
+            img_path=path, target_name=target_name, force_option_b=True
+        )
 
     def on_relocate_target_from_inputs(self):
         """Relocate simulated target object using coordinates from input spin boxes."""

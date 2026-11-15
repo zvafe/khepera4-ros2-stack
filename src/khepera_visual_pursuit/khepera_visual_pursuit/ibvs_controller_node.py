@@ -14,6 +14,7 @@
 
 """ROS 2 Node executing differential drive Image-Based Visual Servoing (IBVS)."""
 
+from dataclasses import replace
 import logging
 import math
 import sys
@@ -22,6 +23,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from khepera_visual_pursuit.ibvs_controller import (
+    DEFAULT_CREEP_VELOCITY,
     DEFAULT_DESIRED_AREA_FRACTION,
     DEFAULT_K_OMEGA,
     DEFAULT_KV,
@@ -39,7 +41,9 @@ from khepera_visual_pursuit.ros_compat import (
     Float32,
     LaserScan,
     Node,
+    Parameter,
     PolygonStamped,
+    SetParametersResult,
     Twist,
     rclpy,
 )
@@ -50,12 +54,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_KEYPOINTS_TOPIC = "/perception/target_keypoints"
 DEFAULT_CONFIDENCE_TOPIC = "/perception/tracking_confidence"
 DEFAULT_SCAN_TOPIC = "/khepera4/scan"
+DEFAULT_ULTRASONIC_TOPIC_PREFIX = "/khepera4/us_"
 DEFAULT_CMD_VEL_TOPIC = "/cmd_vel"
 DEFAULT_STATUS_TOPIC = "/perception/ibvs_status"
 DEFAULT_STOP_TOPIC = "/target_found_and_stopped"
 DEFAULT_CONTROL_RATE_HZ: float = 25.0
 DEFAULT_IMAGE_WIDTH: float = 640.0
 DEFAULT_IMAGE_HEIGHT: float = 480.0
+DEFAULT_USE_ULTRASONIC: bool = True
 FRONTAL_SECTOR_RAD: float = math.pi / 6.0
 
 
@@ -76,6 +82,7 @@ class IBVSControllerNode(Node):
         self.latest_obstacle_distance: float = 10.0
         self.latest_obstacle_left: float = 10.0
         self.latest_obstacle_right: float = 10.0
+        self.latest_us_ranges: List[float] = [10.0] * 5
         self.has_active_target: bool = False
         self.target_reached_and_stopped: bool = False
         self.pursuit_enabled: bool = bool(self.get_parameter("auto_start").value)
@@ -90,6 +97,8 @@ class IBVSControllerNode(Node):
         self.declare_parameter("keypoints_topic", DEFAULT_KEYPOINTS_TOPIC)
         self.declare_parameter("confidence_topic", DEFAULT_CONFIDENCE_TOPIC)
         self.declare_parameter("scan_topic", DEFAULT_SCAN_TOPIC)
+        self.declare_parameter("use_ultrasonic", DEFAULT_USE_ULTRASONIC)
+        self.declare_parameter("ultrasonic_topic_prefix", DEFAULT_ULTRASONIC_TOPIC_PREFIX)
         self.declare_parameter("cmd_vel_topic", DEFAULT_CMD_VEL_TOPIC)
         self.declare_parameter("auto_start", False)
         self.declare_parameter("cooperate_with_explorer", False)
@@ -102,6 +111,7 @@ class IBVSControllerNode(Node):
         self.declare_parameter("min_confidence", DEFAULT_MIN_CONFIDENCE)
         self.declare_parameter("reverse_sweep_omega", DEFAULT_REVERSE_SWEEP_OMEGA)
         self.declare_parameter("obstacle_stop_distance", DEFAULT_OBSTACLE_STOP_DISTANCE)
+        self.declare_parameter("creep_velocity", DEFAULT_CREEP_VELOCITY)
         self.declare_parameter("image_width", DEFAULT_IMAGE_WIDTH)
         self.declare_parameter("image_height", DEFAULT_IMAGE_HEIGHT)
 
@@ -119,6 +129,7 @@ class IBVSControllerNode(Node):
             min_confidence=float(self.get_parameter("min_confidence").value),
             reverse_sweep_omega=float(self.get_parameter("reverse_sweep_omega").value),
             obstacle_stop_distance=float(self.get_parameter("obstacle_stop_distance").value),
+            creep_velocity=float(self.get_parameter("creep_velocity").value),
         )
 
     def _init_subscribers_and_publishers(self) -> None:
@@ -137,6 +148,18 @@ class IBVSControllerNode(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, scan_topic, self._on_laser_scan, 10
         )
+        self.us_subs: List[object] = []
+        if bool(self.get_parameter("use_ultrasonic").value):
+            us_prefix = str(self.get_parameter("ultrasonic_topic_prefix").value)
+            for i in range(5):
+                topic = f"{us_prefix}{i}/scan"
+                sub = self.create_subscription(
+                    LaserScan,
+                    topic,
+                    lambda msg, idx=i: self._on_ultrasonic_scan(idx, msg),
+                    10,
+                )
+                self.us_subs.append(sub)
 
         qos_latched = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -157,6 +180,55 @@ class IBVSControllerNode(Node):
         self.stop_sub = self.create_subscription(
             Bool, DEFAULT_STOP_TOPIC, self._on_stop_signal_message, 10
         )
+        self.pursuit_speed_sub = self.create_subscription(
+            Twist, "/pursuit/set_speed_limits", self._on_speed_limits, 10
+        )
+        self.robot_speed_sub = self.create_subscription(
+            Twist, "/robot/speed_limits", self._on_speed_limits, 10
+        )
+        self.explorer_speed_sub = self.create_subscription(
+            Twist, "/explorer/set_speed_limits", self._on_speed_limits, 10
+        )
+        if hasattr(self, "add_on_set_parameters_callback"):
+            self.add_on_set_parameters_callback(self._on_set_parameters)
+
+    def _on_speed_limits(self, msg: Twist) -> None:
+        """Update IBVS maximum linear and angular speed limits from speed dial or topic."""
+        changes = {}
+        if msg.linear.x > 0.001:
+            changes["v_max"] = float(msg.linear.x)
+        if msg.angular.z > 0.001:
+            new_omega_max = float(msg.angular.z)
+            changes["omega_max"] = new_omega_max
+            if self.gains.reverse_sweep_omega > new_omega_max:
+                changes["reverse_sweep_omega"] = new_omega_max
+
+        if changes:
+            self.gains = replace(self.gains, **changes)
+            if hasattr(self, "controller") and self.controller is not None:
+                self.controller.gains = self.gains
+            self.get_logger().info(
+                f"IBVS speed limits updated: v_max={self.gains.v_max:.2f} m/s, "
+                f"omega_max={self.gains.omega_max:.2f} rad/s"
+            )
+
+    def _on_set_parameters(self, params: List[Parameter]) -> SetParametersResult:
+        """Handle dynamic parameter reconfigurations for visual pursuit speed limits."""
+        changes = {}
+        for param in params:
+            if param.name in ("v_max", "linear_speed"):
+                val = float(param.value)
+                if val > 0.001:
+                    changes["v_max"] = val
+            elif param.name in ("omega_max", "angular_speed", "turn_speed"):
+                val = float(param.value)
+                if val > 0.001:
+                    changes["omega_max"] = val
+        if changes:
+            self.gains = replace(self.gains, **changes)
+            if hasattr(self, "controller") and self.controller is not None:
+                self.controller.gains = self.gains
+        return SetParametersResult(successful=True)
 
     def _on_stop_signal_message(self, msg: Bool) -> None:
         """Reset terminal stop state when False is received on stop topic."""
@@ -228,6 +300,17 @@ class IBVSControllerNode(Node):
         if self.latest_confidence < 0.05:
             self.has_active_target = False
 
+    def _on_ultrasonic_scan(self, index: int, msg: LaserScan) -> None:
+        """Process range scan from individual ultrasonic proximity sensor."""
+        if not msg.ranges:
+            return
+        valid_ranges = [
+            r for r in msg.ranges
+            if msg.range_min <= r <= msg.range_max and not math.isnan(r) and not math.isinf(r)
+        ]
+        if valid_ranges:
+            self.latest_us_ranges[index] = float(min(valid_ranges))
+
     def _on_laser_scan(self, msg: LaserScan) -> None:
         """Extract minimum range from frontal and lateral sectors for obstacle avoidance."""
         if not msg.ranges:
@@ -240,9 +323,10 @@ class IBVSControllerNode(Node):
         min_left_dist = 10.0
         min_right_dist = 10.0
         angle = msg.angle_min
+        is_body_frame = msg.header.frame_id in ("base_footprint", "base_link")
         for r in msg.ranges:
             if msg.range_min <= r <= msg.range_max:
-                eff_r = (r - 0.07) if r > 0.07 else r
+                eff_r = (r - 0.07) if (is_body_frame and r > 0.07) else r
                 if -FRONTAL_SECTOR_RAD <= angle <= FRONTAL_SECTOR_RAD:
                     if eff_r < min_frontal_dist:
                         min_frontal_dist = eff_r
@@ -269,6 +353,19 @@ class IBVSControllerNode(Node):
         if self.cooperate_with_explorer and not self.has_active_target:
             return
 
+        # Fuse frontal and lateral obstacle distances from laser scan and ultrasonic sensors
+        us_frontal = min(
+            self.latest_us_ranges[1],
+            self.latest_us_ranges[2],
+            self.latest_us_ranges[3],
+        )
+        us_left = min(self.latest_us_ranges[0], self.latest_us_ranges[1])
+        us_right = min(self.latest_us_ranges[3], self.latest_us_ranges[4])
+
+        effective_dist = min(self.latest_obstacle_distance, us_frontal)
+        effective_left = min(self.latest_obstacle_left, us_left)
+        effective_right = min(self.latest_obstacle_right, us_right)
+
         target_state = (
             self.latest_norm_x,
             self.latest_area_frac,
@@ -277,9 +374,9 @@ class IBVSControllerNode(Node):
 
         cmd = self.controller.compute_control(
             target_state,
-            self.latest_obstacle_distance,
-            self.latest_obstacle_left,
-            self.latest_obstacle_right,
+            effective_dist,
+            effective_left,
+            effective_right,
         )
 
         if cmd.is_emergency_stop:
@@ -293,7 +390,7 @@ class IBVSControllerNode(Node):
             self.cmd_vel_pub.publish(Twist())
             self.status_pub.publish(Bool(data=False))
             self.get_logger().info(
-                f"🎯 [TERMINAL STOP] Target reached! Standoff: {self.latest_obstacle_distance*100:.1f} cm"
+                f"🎯 [TERMINAL STOP] Target reached! Standoff: {effective_dist*100:.1f} cm"
             )
             return
 

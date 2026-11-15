@@ -22,7 +22,7 @@ def test_ibvs_controller_initialization() -> None:
     controller = IBVSController()
     assert controller.gains.v_max == 0.15
     assert controller.gains.omega_max == 0.8
-    assert controller.gains.obstacle_stop_distance == 0.05
+    assert controller.gains.obstacle_stop_distance == 0.15
     assert controller.gains.min_confidence == 0.35
     assert controller.last_omega == 0.0
 
@@ -139,23 +139,29 @@ def test_ibvs_lateral_obstacle_avoidance_during_pursuit() -> None:
     assert cmd_avoid_right.linear_x > 0.0
 
 
-def test_ibvs_stop_at_5cm_in_front_of_target() -> None:
-    """Verify robot stops exactly 5 cm (0.05m) in front of the target."""
+def test_ibvs_terminal_standoff_precision_and_fov_creep() -> None:
+    """Verify controlled creep velocity when target fills FOV until d_obstacle <= 0.15m."""
     controller = IBVSController()
 
-    # 1. Approaching at 0.15 m: decelerating forward velocity
-    cmd_approach = controller.compute_control((0.0, 0.05, 1.0), obstacle_distance=0.15)
+    # 1. Distant approach at 0.80 m: normal forward velocity
+    cmd_approach = controller.compute_control((0.0, 0.05, 1.0), obstacle_distance=0.80)
     assert cmd_approach.linear_x > 0.0
-    assert cmd_approach.linear_x < controller.gains.v_max
+    assert not cmd_approach.is_emergency_stop
 
-    # 2. At 5 cm (0.05 m) in front of target: full emergency stop
-    cmd_5cm = controller.compute_control((0.0, 0.10, 1.0), obstacle_distance=0.05)
-    assert cmd_5cm.linear_x == 0.0
-    assert cmd_5cm.angular_z == 0.0
-    assert cmd_5cm.is_emergency_stop is True
+    # 2. Target fills camera FOV (area = 0.60 >> desired 0.15) while d_obstacle is 0.25 m (> 0.15 m)
+    # Forward velocity must NOT stall prematurely to 0.0, but maintain creep velocity (0.025 m/s)
+    cmd_creep = controller.compute_control((0.0, 0.60, 1.0), obstacle_distance=0.25)
+    assert abs(cmd_creep.linear_x - 0.025) < 1e-3
+    assert not cmd_creep.is_emergency_stop
 
-    # 3. Inside 5 cm (< 0.05 m): full emergency stop
-    cmd_closer = controller.compute_control((0.0, 0.12, 1.0), obstacle_distance=0.03)
+    # 3. Terminal Standoff Precision: at d_obstacle = 0.15 m: full emergency stop
+    cmd_stop_15cm = controller.compute_control((0.0, 0.70, 1.0), obstacle_distance=0.15)
+    assert cmd_stop_15cm.linear_x == 0.0
+    assert cmd_stop_15cm.angular_z == 0.0
+    assert cmd_stop_15cm.is_emergency_stop is True
+
+    # 4. Inside terminal standoff d_obstacle = 0.12 m (< 0.15 m): full emergency stop
+    cmd_closer = controller.compute_control((0.0, 0.85, 1.0), obstacle_distance=0.12)
     assert cmd_closer.linear_x == 0.0
     assert cmd_closer.angular_z == 0.0
     assert cmd_closer.is_emergency_stop is True

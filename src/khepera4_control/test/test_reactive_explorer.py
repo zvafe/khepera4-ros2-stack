@@ -467,16 +467,23 @@ def test_mutual_exclusion_pursuit_active_suppresses_cmd_vel():
         assert len(published_cmds) == 1
         published_cmds.clear()
 
-        # Engage visual pursuit: explorer enters active search mode
+        # Engage visual pursuit: explorer enters active search mode starting with 360 survey spin
         node.pursuit_enable_callback(Bool(data=True))
         assert node.pursuit_active is True
         assert node.enabled is True
         assert node.target_in_sight is False
+        assert node.state == node.STATE_INITIAL_SPIN
 
-        # Active exploration search continues to drive robot while searching
+        # Active exploration begins with 360 survey rotation
         node.control_loop()
         assert len(published_cmds) == 1
-        assert published_cmds[0].linear.x > 0.0
+        assert abs(published_cmds[0].angular.z) > 0.0
+        published_cmds.clear()
+
+        # Complete 360 survey spin to transition to frontier cruise
+        node.spin_cumulative_yaw = 2.0 * math.pi
+        node.control_loop()
+        assert node.state == node.STATE_CRUISE
         published_cmds.clear()
 
         # Target acquired in sight: explorer must immediately halt and yield control
@@ -493,6 +500,7 @@ def test_mutual_exclusion_pursuit_active_suppresses_cmd_vel():
         assert len(published_cmds) == 0
 
         # Target lost from sight: active exploration resumes search
+        node.target_lost_timeout = 0.0
         node.target_status_callback(Bool(data=False))
         assert node.target_in_sight is False
         node.control_loop()

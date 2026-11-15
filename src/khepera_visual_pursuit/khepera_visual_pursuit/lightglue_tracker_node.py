@@ -302,29 +302,32 @@ class LightGlueTrackerNode(Node):
                     return
 
         # Fallback to verified candidate ROI vertices if present and recent
+        is_mode_b = (self.pursuit_mode == "template")
+        min_fallback_score = 0.75 if is_mode_b else 0.35
         if self.latest_verified_roi is not None and (now - self.latest_roi_time) < 1.5:
-            c_x = float(self.latest_verified_roi.bbox.center.position.x)
-            c_y = float(self.latest_verified_roi.bbox.center.position.y)
-            s_x = float(self.latest_verified_roi.bbox.size_x)
-            s_y = float(self.latest_verified_roi.bbox.size_y)
-            half_w = s_x / 2.0
-            half_h = s_y / 2.0
-            corners = (
-                (c_x - half_w, c_y - half_h),
-                (c_x + half_w, c_y - half_h),
-                (c_x + half_w, c_y + half_h),
-                (c_x - half_w, c_y + half_h),
-            )
             score = (
                 float(self.latest_verified_roi.results[0].hypothesis.score)
                 if self.latest_verified_roi.results
                 else 0.60
             )
-            self._last_confidence = score
-            poly_msg = self._build_polygon_message(corners)
-            self.keypoints_pub.publish(poly_msg)
-            self.confidence_pub.publish(Float32(data=score))
-            return
+            if score >= min_fallback_score:
+                c_x = float(self.latest_verified_roi.bbox.center.position.x)
+                c_y = float(self.latest_verified_roi.bbox.center.position.y)
+                s_x = float(self.latest_verified_roi.bbox.size_x)
+                s_y = float(self.latest_verified_roi.bbox.size_y)
+                half_w = s_x / 2.0
+                half_h = s_y / 2.0
+                corners = (
+                    (c_x - half_w, c_y - half_h),
+                    (c_x + half_w, c_y - half_h),
+                    (c_x + half_w, c_y + half_h),
+                    (c_x - half_w, c_y + half_h),
+                )
+                self._last_confidence = score
+                poly_msg = self._build_polygon_message(corners)
+                self.keypoints_pub.publish(poly_msg)
+                self.confidence_pub.publish(Float32(data=score))
+                return
 
         self._last_confidence = 0.0
         self.confidence_pub.publish(Float32(data=0.0))

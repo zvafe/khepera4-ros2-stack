@@ -29,6 +29,7 @@ Covers:
 import os
 import sys
 import tempfile
+import time
 
 import cv2
 from khepera4_control.mapping_dashboard import (
@@ -489,3 +490,118 @@ def test_camera_popup_displays_target_pursuit_overlay(qapp):
         assert window.camera_popup.lbl_view.pixmap() is not None
     finally:
         safe_close_window(window)
+
+
+def test_deploy_custom_image_spawns_textured_gazebo_target(qapp):
+    """Verify deploying a custom user image creates textured SDF with cache-busting texture."""
+    mock_ros = MockRosWorker()
+    window = MappingDashboardWindow(ros_worker=mock_ros)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        custom_img_path = f.name
+    try:
+        # Create a distinct custom image
+        custom_img = np.full((128, 128, 3), 180, dtype=np.uint8)
+        cv2.circle(custom_img, (64, 64), 30, (0, 255, 0), -1)
+        cv2.imwrite(custom_img_path, custom_img)
+
+        # Baseline: semantic mode checked initially
+        assert window.radio_mode_semantic.isChecked() is True
+
+        # Set path to custom user image
+        window.edit_target_img_path.setText(custom_img_path)
+
+        # Deploy template
+        window.on_deploy_target_template()
+
+        # Mode should automatically switch to template
+        assert window.radio_mode_template.isChecked() is True
+        assert len(mock_ros.published_target_images) == 1
+
+        # Allow background spawn thread to write target.sdf
+        target_dir = "/tmp/khepera4_target"
+        sdf_file = os.path.join(target_dir, "target.sdf")
+        model_config = os.path.join(target_dir, "model.config")
+
+        sdf_content = ""
+        for _ in range(30):
+            time.sleep(0.05)
+            if os.path.isfile(sdf_file):
+                with open(sdf_file, "r", encoding="utf-8") as f:
+                    sdf_content = f.read()
+                if "<albedo_map>" in sdf_content:
+                    break
+
+        assert os.path.isfile(model_config)
+        assert "<albedo_map>" in sdf_content
+        assert "target_texture_" in sdf_content
+        assert "<box><size>0.12 0.12 0.12</size></box>" in sdf_content
+    finally:
+        if os.path.isfile(custom_img_path):
+            os.remove(custom_img_path)
+        safe_close_window(window)
+
+
+def test_stop_explorer_and_stop_pursuit_kills_instances(qapp):
+    """Verify stop explorer and stop pursuit kill active explorer instances and stop motion."""
+    class DummyRosWorker:
+        def __init__(self):
+            self.auto_spawn_explorer = True
+            self.explorer_killed = False
+            self.cmd_v = None
+            self.cmd_w = None
+            self.pursuit_enabled = None
+            self.using_fused_odom = False
+
+        def kill_explorer_instances(self):
+            self.explorer_killed = True
+
+        def _ensure_explorer_running(self):
+            return True
+
+        def set_pursuit_enable(self, state):
+            self.pursuit_enabled = state
+
+        def publish_cmd(self, v, w):
+            self.cmd_v = v
+            self.cmd_w = w
+
+        def set_auto_explore(self, state):
+            if not state:
+                self.kill_explorer_instances()
+
+        def publish_target_prompt(self, prompt):
+            pass
+
+        def stop(self):
+            pass
+
+    dummy_ros = DummyRosWorker()
+    window = MappingDashboardWindow(ros_worker=None)
+    window.ros = dummy_ros
+    try:
+        # Starting pursuit triggers ensure explorer running
+        window.is_pursuit_active = False
+        window.on_toggle_pursuit_clicked()
+        assert window.is_pursuit_active is True
+        assert dummy_ros.pursuit_enabled is True
+
+        # Stopping pursuit kills explorer instances
+        window.on_toggle_pursuit_clicked()
+        assert window.is_pursuit_active is False
+        assert dummy_ros.pursuit_enabled is False
+        assert dummy_ros.explorer_killed is True
+
+        # Stop button triggers kill explorer instances
+        dummy_ros.explorer_killed = False
+        window.on_stop_clicked()
+        assert dummy_ros.explorer_killed is True
+
+        # Stop auto explore triggers kill explorer instances
+        dummy_ros.explorer_killed = False
+        window.is_auto_exploring = True
+        window.on_toggle_auto_explore()
+        assert window.is_auto_exploring is False
+        assert dummy_ros.explorer_killed is True
+    finally:
+        safe_close_window(window)
+

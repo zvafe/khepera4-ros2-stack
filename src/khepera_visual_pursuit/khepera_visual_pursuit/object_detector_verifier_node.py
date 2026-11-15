@@ -150,6 +150,12 @@ class ObjectDetectorVerifierNode(Node):
         self.CONFIRMATION_SCORE_THRESHOLD: float = 0.25
         self.LOCK_TIMEOUT_SECONDS: float = 6.0
 
+        # Mode B temporal confirmation buffer and strict verification thresholds
+        self.mode_b_confirmation_buffer: List[BoundingBox] = []
+        self.TAU_VERIFY_MODE_B_INIT: float = 0.68
+        self.TAU_VERIFY_MODE_B_TRACK: float = 0.58
+        self.MODE_B_CONFIRMATION_FRAMES: int = 2
+
         self._load_target_from_parameter()
 
         self.image_sub = self.create_subscription(Image, img_topic, self._on_camera_image, 10)
@@ -201,6 +207,8 @@ class ObjectDetectorVerifierNode(Node):
             self.target_locked = False
             self.last_verified_box = None
             self.missed_detection_count = 0
+            self.confirmation_buffer.clear()
+            self.mode_b_confirmation_buffer.clear()
             self.detector.set_classes(GENERIC_OBJECT_CLASSES)
 
     def _on_target_found_and_stopped(self, msg: Bool) -> None:
@@ -208,6 +216,7 @@ class ObjectDetectorVerifierNode(Node):
         if msg.data:
             self.is_halted = True
             self.confirmation_buffer.clear()
+            self.mode_b_confirmation_buffer.clear()
             self._publish_empty_results()
             self.get_logger().info("Target reached and stopped. Halting object detector node.")
         else:
@@ -221,6 +230,7 @@ class ObjectDetectorVerifierNode(Node):
         self.last_verified_box = None
         self.missed_detection_count = 0
         self.confirmation_buffer.clear()
+        self.mode_b_confirmation_buffer.clear()
         self.last_target_sim_time = 0.0
         if mode in ("template", "image", "mode_b", "mode b"):
             self.pursuit_mode = "template"
@@ -250,6 +260,7 @@ class ObjectDetectorVerifierNode(Node):
             self.last_verified_box = None
             self.missed_detection_count = 0
             self.confirmation_buffer.clear()
+            self.mode_b_confirmation_buffer.clear()
             self.last_target_sim_time = 0.0
             self.detector.set_classes(GENERIC_OBJECT_CLASSES)
             self._publish_thought(
@@ -355,7 +366,7 @@ class ObjectDetectorVerifierNode(Node):
                 scaled_tpl = cv2.resize(tpl_gray, (sw_box, sh_box), interpolation=cv2.INTER_AREA)
                 res = cv2.matchTemplate(frame_gray, scaled_tpl, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= 0.25:
+                if max_val >= 0.40:
                     cx = float((max_loc[0] + sw_box / 2.0) * scale_factor)
                     cy = float((max_loc[1] + sh_box / 2.0) * scale_factor)
                     bw = float(sw_box * scale_factor)
@@ -384,30 +395,17 @@ class ObjectDetectorVerifierNode(Node):
                             center_y=float((cy_b + ch_b / 2.0) * scale_factor),
                             size_x=float(cw_b * scale_factor),
                             size_y=float(ch_b * scale_factor),
-                            confidence=0.45,
+                            confidence=0.30,
                             class_name="contour",
                         )
                     )
-
-        # 4. If still no proposals, evaluate central focus region
-        if not proposals:
-            proposals.append(
-                BoundingBox(
-                    center_x=float(w / 2.0),
-                    center_y=float(h / 2.0),
-                    size_x=float(w * 0.45),
-                    size_y=float(h * 0.45),
-                    confidence=0.30,
-                    class_name="template_target",
-                )
-            )
 
         def proposal_priority(p: BoundingBox) -> float:
             weight = 2.0 if ("template" in p.class_name) else 1.0
             return float(p.score * weight)
 
         nms_proposals = apply_nms(tuple(proposals), iou_threshold=0.35)
-        candidates = [p for p in nms_proposals if p.score >= 0.15]
+        candidates = [p for p in nms_proposals if p.score >= 0.25]
         candidates.sort(key=proposal_priority, reverse=True)
         return list(candidates[:6])
 
@@ -431,6 +429,29 @@ class ObjectDetectorVerifierNode(Node):
                 return
 
             top_candidates = self._generate_mode_b_proposals(self.latest_frame, proposals)
+            if not top_candidates:
+                self.mode_b_confirmation_buffer.clear()
+                if (
+                    self.target_locked
+                    and self.missed_detection_count < self.max_coast_frames
+                    and self.last_verified_box is not None
+                ):
+                    self.missed_detection_count += 1
+                    decayed_sim = self.last_verified_sim * (0.96 ** self.missed_detection_count)
+                    array_msg = self._build_detection_array(self.last_verified_box, decayed_sim)
+                    self.rois_pub.publish(array_msg)
+                    self.status_pub.publish(Bool(data=True))
+                    self._publish_detection_visual(self.last_verified_box, decayed_sim)
+                    thought = (
+                        f"⏳ [Mode B Persistence] Holding target lock ({self.missed_detection_count}/"
+                        f"{self.max_coast_frames} frames) -> Sim={decayed_sim:.2f}"
+                    )
+                    self._publish_thought(thought)
+                else:
+                    self.target_locked = False
+                    self.last_verified_box = None
+                    self._publish_empty_results()
+                return
 
             crops = [self.detector.crop_roi(self.latest_frame, p) for p in top_candidates]
             embeddings = self.verifier.extract_embeddings_batch(crops)
@@ -438,28 +459,75 @@ class ObjectDetectorVerifierNode(Node):
                 embeddings, self.target_embedding, candidate_boxes=tuple(top_candidates)
             )
 
-            if verif.is_verified and verif.best_candidate_index >= 0:
+            tau_req = (
+                self.TAU_VERIFY_MODE_B_TRACK
+                if self.target_locked
+                else self.TAU_VERIFY_MODE_B_INIT
+            )
+            if (
+                verif.is_verified
+                and verif.best_candidate_index >= 0
+                and verif.best_similarity >= tau_req
+            ):
                 best_box = top_candidates[verif.best_candidate_index]
-                self.target_locked = True
-                self.last_verified_box = best_box
-                self.last_verified_sim = verif.best_similarity
-                self.missed_detection_count = 0
 
-                array_msg = self._build_detection_array(best_box, verif.best_similarity)
-                self.rois_pub.publish(array_msg)
-                self.status_pub.publish(Bool(data=True))
-                self._publish_detection_visual(best_box, verif.best_similarity)
-                thought = (
-                    f"🎯 [Mode B] Target Verified by DINOv2! Sim={verif.best_similarity:.2f} "
-                    f"(margin={verif.margin:.2f}) -> Visual Servoing active"
-                )
-                self._publish_thought(thought)
+                if not self.target_locked:
+                    if len(self.mode_b_confirmation_buffer) == 0:
+                        self.mode_b_confirmation_buffer.append(best_box)
+                    else:
+                        last_box = self.mode_b_confirmation_buffer[-1]
+                        if calculate_iou(best_box, last_box) >= self.CONFIRMATION_IOU_THRESHOLD:
+                            self.mode_b_confirmation_buffer.append(best_box)
+                        else:
+                            self.mode_b_confirmation_buffer = [best_box]
+
+                    if len(self.mode_b_confirmation_buffer) >= self.MODE_B_CONFIRMATION_FRAMES:
+                        self.target_locked = True
+                        self.last_verified_box = best_box
+                        self.last_verified_sim = verif.best_similarity
+                        self.missed_detection_count = 0
+                        self.mode_b_confirmation_buffer.clear()
+
+                        array_msg = self._build_detection_array(best_box, verif.best_similarity)
+                        self.rois_pub.publish(array_msg)
+                        self.status_pub.publish(Bool(data=True))
+                        self._publish_detection_visual(best_box, verif.best_similarity)
+                        thought = (
+                            f"🎯 [Mode B] Target Confirmed by DINOv2! Sim={verif.best_similarity:.2f} "
+                            f"(margin={verif.margin:.2f}) -> Visual Servoing active"
+                        )
+                        self._publish_thought(thought)
+                    else:
+                        thought = (
+                            f"🔍 [Mode B] Target candidate verifying "
+                            f"({len(self.mode_b_confirmation_buffer)}/{self.MODE_B_CONFIRMATION_FRAMES} frames) "
+                            f"-> Sim={verif.best_similarity:.2f}"
+                        )
+                        self._publish_thought(thought)
+                        array_msg = self._build_detection_array(best_box, verif.best_similarity)
+                        self.rois_pub.publish(array_msg)
+                        self._publish_detection_visual(best_box, verif.best_similarity)
+                else:
+                    self.last_verified_box = best_box
+                    self.last_verified_sim = verif.best_similarity
+                    self.missed_detection_count = 0
+                    self.mode_b_confirmation_buffer.clear()
+
+                    array_msg = self._build_detection_array(best_box, verif.best_similarity)
+                    self.rois_pub.publish(array_msg)
+                    self.status_pub.publish(Bool(data=True))
+                    self._publish_detection_visual(best_box, verif.best_similarity)
+                    thought = (
+                        f"🎯 [Mode B Tracking] Sim={verif.best_similarity:.2f} "
+                        f"(margin={verif.margin:.2f}) -> Visual Servoing active"
+                    )
+                    self._publish_thought(thought)
             elif (
                 self.target_locked
                 and self.missed_detection_count < self.max_coast_frames
                 and self.last_verified_box is not None
             ):
-                # Temporal persistence: hold target lock during momentary frame loss or noise
+                self.mode_b_confirmation_buffer.clear()
                 self.missed_detection_count += 1
                 decayed_sim = self.last_verified_sim * (0.96 ** self.missed_detection_count)
                 array_msg = self._build_detection_array(self.last_verified_box, decayed_sim)
@@ -474,6 +542,7 @@ class ObjectDetectorVerifierNode(Node):
             else:
                 self.target_locked = False
                 self.last_verified_box = None
+                self.mode_b_confirmation_buffer.clear()
                 self._publish_empty_results()
             return
 

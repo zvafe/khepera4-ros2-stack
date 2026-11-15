@@ -156,6 +156,12 @@ def test_detector_verifier_mode_b_reference_image() -> None:
     scene[90:150, 130:190] = target
     node._on_camera_image(cv2_to_imgmsg(scene))
 
+    # Frame 1: candidate detected and verifying (1/2 frames)
+    node._on_detection_timer()
+    assert len(node.mode_b_confirmation_buffer) == 1
+    assert len(published_rois) >= 1
+
+    # Frame 2: confirmed across 2 consecutive frames -> target locked!
     node._on_detection_timer()
     assert published_status[-1].data is True
     assert len(published_rois[-1].detections) >= 1
@@ -315,8 +321,8 @@ def test_mode_a_temporal_confirmation_and_unlock() -> None:
     assert node.target_embedding is not None
     assert len(node.confirmation_buffer) == 0
 
-    # Simulate timeout: target lost / similarity low for > 1.0 second
-    node.last_target_sim_time = time.time() - 2.0
+    # Simulate timeout: target lost / similarity low for > LOCK_TIMEOUT_SECONDS
+    node.last_target_sim_time = time.time() - (node.LOCK_TIMEOUT_SECONDS + 1.0)
     node.detector.generate_proposals = lambda f: ()
     node._on_detection_timer()
 

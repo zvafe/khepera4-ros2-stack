@@ -48,7 +48,9 @@ ibvs_controller_node:
     desired_area_fraction: 0.85
     min_confidence: 0.35
     reverse_sweep_omega: 0.2
-    obstacle_stop_distance: 0.05
+    obstacle_stop_distance: 0.15
+    use_ultrasonic: true
+    ultrasonic_topic_prefix: "/khepera4/us_"
     cooperate_with_explorer: true
     image_width: 640.0
     image_height: 480.0

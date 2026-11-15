@@ -18,6 +18,7 @@ from typing import List
 
 import pytest
 
+from khepera_visual_pursuit.ibvs_controller import DEFAULT_OMEGA_MAX, DEFAULT_V_MAX
 from khepera_visual_pursuit.ibvs_controller_node import IBVSControllerNode
 from khepera_visual_pursuit.ros_compat import (
     Bool,
@@ -242,3 +243,85 @@ def test_ibvs_controller_node_target_lost_initiates_recovery_sweep() -> None:
     assert published_status[0].data is False
 
     node.destroy_node()
+
+
+def test_ibvs_speed_limits_subscription_and_parameters() -> None:
+    """Verify that speed dial updates via topic and parameters dynamically tune IBVS speeds."""
+    node = IBVSControllerNode()
+    try:
+        # Default baseline
+        assert node.gains.v_max == pytest.approx(DEFAULT_V_MAX, abs=1e-3)
+        assert node.gains.omega_max == pytest.approx(DEFAULT_OMEGA_MAX, abs=1e-3)
+
+        # Dynamic speed update via Twist message
+        speed_msg = Twist()
+        speed_msg.linear.x = 0.28
+        speed_msg.angular.z = 1.45
+        node._on_speed_limits(speed_msg)
+
+        assert node.gains.v_max == pytest.approx(0.28, abs=1e-3)
+        assert node.gains.omega_max == pytest.approx(1.45, abs=1e-3)
+        assert node.controller.gains.v_max == pytest.approx(0.28, abs=1e-3)
+        assert node.controller.gains.omega_max == pytest.approx(1.45, abs=1e-3)
+
+        # Dynamic speed update via parameter callback
+        from khepera_visual_pursuit.ros_compat import Parameter
+        p1 = Parameter("v_max", value=0.08)
+        p2 = Parameter("omega_max", value=0.65)
+        res = node._on_set_parameters([p1, p2])
+        assert res.successful is True
+        assert node.gains.v_max == pytest.approx(0.08, abs=1e-3)
+        assert node.gains.omega_max == pytest.approx(0.65, abs=1e-3)
+        assert node.controller.gains.v_max == pytest.approx(0.08, abs=1e-3)
+        assert node.controller.gains.omega_max == pytest.approx(0.65, abs=1e-3)
+    finally:
+        node.destroy_node()
+
+
+def test_ibvs_controller_node_ultrasonic_proximity_stopping() -> None:
+    """Verify that ultrasonic proximity sensor readings trigger terminal stop at <= 0.15m."""
+    node = IBVSControllerNode()
+    try:
+        published_twists: List[Twist] = []
+        published_stops: List[Bool] = []
+        node.cmd_vel_pub.publish = lambda m: published_twists.append(m)
+        node.stop_pub.publish = lambda m: published_stops.append(m)
+
+        # 1. Simulate frontal ultrasonic sensor us_2 reading 0.22m (> 0.15m):
+        # Target fills camera FOV (area=0.70 >> 0.15), should creep at 0.025 m/s
+        us2_scan = LaserScan()
+        us2_scan.range_min = 0.02
+        us2_scan.range_max = 2.0
+        us2_scan.ranges = [0.22]
+        node._on_ultrasonic_scan(2, us2_scan)
+
+        node.pursuit_enabled = True
+        node.has_active_target = True
+        node.latest_norm_x = 0.0
+        node.latest_area_frac = 0.70  # Target fills POV
+        node.latest_confidence = 0.95
+        node.latest_obstacle_distance = 10.0  # Laser scan has not detected yet
+
+        node._on_control_cycle()
+        assert len(published_twists) == 1
+        assert abs(published_twists[0].linear.x - 0.025) < 1e-3  # Creeps forward
+        assert node.target_reached_and_stopped is False
+
+        # 2. Simulate frontal ultrasonic sensor us_2 detecting target at 0.14 m (<= 0.15 m):
+        # Immediate terminal emergency stop
+        us2_scan_close = LaserScan()
+        us2_scan_close.range_min = 0.02
+        us2_scan_close.range_max = 2.0
+        us2_scan_close.ranges = [0.14]
+        node._on_ultrasonic_scan(2, us2_scan_close)
+
+        node._on_control_cycle()
+        assert len(published_twists) == 2
+        assert published_twists[1].linear.x == 0.0
+        assert published_twists[1].angular.z == 0.0
+        assert len(published_stops) == 1
+        assert published_stops[0].data is True
+        assert node.target_reached_and_stopped is True
+        assert node.pursuit_enabled is False
+    finally:
+        node.destroy_node()

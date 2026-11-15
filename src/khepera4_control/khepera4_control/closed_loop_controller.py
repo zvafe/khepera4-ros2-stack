@@ -42,6 +42,16 @@ class ClosedLoopController(Node):
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.odom_sub = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.goal_sub = self.create_subscription(PoseStamped, 'goal_pose', self.goal_callback, 10)
+        self.speed_sub = self.create_subscription(
+            Twist, '/robot/speed_limits', self.speed_callback, 10
+        )
+
+    def speed_callback(self, msg: Twist) -> None:
+        """Update speed limits dynamically from speed dial or topic."""
+        if msg.linear.x > 0.001:
+            self.v_max = float(msg.linear.x)
+        if msg.angular.z > 0.001:
+            self.w_max = float(msg.angular.z)
 
         self.current_x = 0.0
         self.current_y = 0.0
