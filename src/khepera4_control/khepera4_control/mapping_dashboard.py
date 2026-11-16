@@ -41,6 +41,7 @@ import json
 import math
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -68,13 +69,13 @@ try:
 except Exception:
     PYQTGRAPH_AVAILABLE = False
 
-from PyQt5.QtCore import QEvent, QObject, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QKeyEvent, QPixmap
+from PyQt5.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QGuiApplication, QImage, QKeyEvent, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox,
-    QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QDialog, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QPushButton, QRadioButton,
-    QScrollArea, QSlider, QSplitter, QTextEdit,
+    QRubberBand, QScrollArea, QSlider, QSplitter, QTextEdit,
     QVBoxLayout, QWidget
 )
 
@@ -1238,9 +1239,16 @@ class CameraPopupWindow(QWidget):
         self.latest_hud_res: Tuple[int, int] = (640, 480)
 
         self.setWindowTitle("Khepera IV - Live Camera Stream [WASD Teleop Active]")
-        self.resize(540, 430)
         self.setMinimumSize(260, 210)
         self.setFocusPolicy(Qt.StrongFocus)
+
+        primary_screen = QGuiApplication.primaryScreen()
+        if primary_screen:
+            geom = primary_screen.availableGeometry()
+            sw, sh = geom.width(), geom.height()
+            self.setGeometry(geom.x() + sw // 2, geom.y(), sw // 2, sh // 2)
+        else:
+            self.resize(540, 430)
 
         if self.is_always_on_top:
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -1567,6 +1575,141 @@ class CameraPopupWindow(QWidget):
 
 
 # ==============================================================================
+# Live Camera Frame Crop & Target Template Selection Dialog
+# ==============================================================================
+class CropImageLabel(QLabel):
+    """Interactive QLabel providing rubber-band ROI selection on live camera image."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rubber_band = QRubberBand(QRubberBand.Rectangle, self)
+        self.origin = QPoint()
+        self.selected_rect: Optional[QRect] = None
+
+    def mousePressEvent(self, event):
+        """Begin rubber-band selection rectangle on left click."""
+        if event.button() == Qt.LeftButton:
+            self.origin = event.pos()
+            self.rubber_band.setGeometry(QRect(self.origin, QSize()))
+            self.rubber_band.show()
+
+    def mouseMoveEvent(self, event):
+        """Update rubber-band rectangle dimensions while dragging."""
+        if not self.origin.isNull():
+            self.rubber_band.setGeometry(QRect(self.origin, event.pos()).normalized())
+
+    def mouseReleaseEvent(self, event):
+        """Finalize rubber-band selection rectangle on mouse release."""
+        if event.button() == Qt.LeftButton:
+            self.selected_rect = self.rubber_band.geometry()
+
+
+class TargetCropDialog(QDialog):
+    """Modal dialog to capture and crop target template from live Khepera IV camera."""
+
+    def __init__(self, rgb_image: np.ndarray, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("📸 Capture & Crop Target from Camera")
+        self.setModal(True)
+        self.resize(680, 560)
+        self.setStyleSheet("background-color: #0b1120; color: #f8fafc;")
+
+        self.rgb_image = rgb_image
+        self.img_h, self.img_w = rgb_image.shape[:2]
+        self.cropped_bgr: Optional[np.ndarray] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        lbl_header = QLabel("🎯 Drag a rectangle around the target object, or use full frame:")
+        lbl_header.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 11px;")
+        layout.addWidget(lbl_header)
+
+        # Image view container
+        self.lbl_view = CropImageLabel(self)
+        self.lbl_view.setAlignment(Qt.AlignCenter)
+        self.lbl_view.setStyleSheet("border: 2px solid #334155; background-color: #020617;")
+
+        qimg = QImage(
+            self.rgb_image.data, self.img_w, self.img_h, self.img_w * 3, QImage.Format_RGB888
+        )
+        self.pixmap = QPixmap.fromImage(qimg)
+        self.display_w = min(640, self.img_w)
+        self.display_h = int(self.img_h * (self.display_w / max(1, self.img_w)))
+        scaled_pix = self.pixmap.scaled(
+            self.display_w, self.display_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.lbl_view.setPixmap(scaled_pix)
+        self.lbl_view.setFixedSize(self.display_w, self.display_h)
+        layout.addWidget(self.lbl_view, alignment=Qt.AlignCenter)
+
+        # Action Buttons
+        btn_row = QWidget()
+        b_layout = QHBoxLayout(btn_row)
+        b_layout.setContentsMargins(0, 4, 0, 0)
+        b_layout.setSpacing(8)
+
+        self.btn_confirm = QPushButton("✂️ Crop & Select Region")
+        self.btn_confirm.setCursor(Qt.PointingHandCursor)
+        self.btn_confirm.setStyleSheet(
+            "background-color: #0284c7; border: 1px solid #38bdf8; border-radius: 4px; "
+            "color: white; font-weight: bold; padding: 6px 12px;"
+        )
+        self.btn_confirm.clicked.connect(self._on_confirm_crop)
+
+        self.btn_full = QPushButton("🖼️ Use Full Frame")
+        self.btn_full.setCursor(Qt.PointingHandCursor)
+        self.btn_full.setStyleSheet(
+            "background-color: #1e293b; border: 1px solid #475569; border-radius: 4px; "
+            "color: #cbd5e1; font-weight: bold; padding: 6px 12px;"
+        )
+        self.btn_full.clicked.connect(self._on_use_full_frame)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.setStyleSheet(
+            "background-color: #334155; border: 1px solid #64748b; border-radius: 4px; "
+            "color: #e2e8f0; padding: 6px 12px;"
+        )
+        self.btn_cancel.clicked.connect(self.reject)
+
+        b_layout.addStretch()
+        b_layout.addWidget(self.btn_full)
+        b_layout.addWidget(self.btn_confirm)
+        b_layout.addWidget(self.btn_cancel)
+        layout.addWidget(btn_row)
+
+    def _on_confirm_crop(self):
+        """Extract user-drawn bounding box and convert to OpenCV BGR."""
+        rect = self.lbl_view.selected_rect
+        if rect is None or rect.width() < 10 or rect.height() < 10:
+            self._on_use_full_frame()
+            return
+
+        scale_x = self.img_w / float(self.display_w)
+        scale_y = self.img_h / float(self.display_h)
+
+        x1 = max(0, int(rect.x() * scale_x))
+        y1 = max(0, int(rect.y() * scale_y))
+        x2 = min(self.img_w, int((rect.x() + rect.width()) * scale_x))
+        y2 = min(self.img_h, int((rect.y() + rect.height()) * scale_y))
+
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            self._on_use_full_frame()
+            return
+
+        cropped_rgb = self.rgb_image[y1:y2, x1:x2]
+        self.cropped_bgr = cv2.cvtColor(cropped_rgb, cv2.COLOR_RGB2BGR)
+        self.accept()
+
+    def _on_use_full_frame(self):
+        """Use complete uncropped frame as reference template."""
+        self.cropped_bgr = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2BGR)
+        self.accept()
+
+
+# ==============================================================================
 # Main Mapping Dashboard Window
 # ==============================================================================
 class MappingDashboardWindow(QMainWindow):
@@ -1601,6 +1744,7 @@ class MappingDashboardWindow(QMainWindow):
         self.active_goal: Optional[Tuple[float, float]] = None
         self.drawn_path: List[Tuple[float, float]] = []
         self.is_drawing_path: bool = False
+        self.is_dragging_target: bool = False
         self.map_interaction_mode: str = 'none'  # 'none', 'click_goal', 'draw_path'
 
         # Teleoperation Limits & Keyboard State
@@ -1713,6 +1857,9 @@ class MappingDashboardWindow(QMainWindow):
         # Initial plot draw
         self.update_map_plot()
 
+        # Automatically open Live Camera Stream pop-up window on bootup
+        QTimer.singleShot(100, self.on_toggle_camera_popup)
+
     def _on_plot_timer_tick(self):
         """Throttled timer tick (3 Hz): redraws map only if sensor data or pose changed."""
         if self._map_dirty:
@@ -1733,8 +1880,14 @@ class MappingDashboardWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Khepera IV Mapping & Spatial Exploration Station")
-        self.resize(1280, 800)
-        self.setMinimumSize(1024, 660)
+        self.setMinimumSize(600, 480)
+        primary_screen = QGuiApplication.primaryScreen()
+        if primary_screen:
+            geom = primary_screen.availableGeometry()
+            sw, sh = geom.width(), geom.height()
+            self.setGeometry(geom.x(), geom.y(), sw // 2, sh)
+        else:
+            self.resize(1280, 800)
         self.setStyleSheet(MODERN_STYLE)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -1973,9 +2126,21 @@ class MappingDashboardWindow(QMainWindow):
         )
         self.btn_pin_view.clicked.connect(self.on_pin_view_to_map)
 
+        self.btn_snap_cam = QPushButton("📸 Crop / Snap")
+        self.btn_snap_cam.setCursor(Qt.PointingHandCursor)
+        self.btn_snap_cam.setToolTip(
+            "Freeze live camera frame and crop ROI for Mode B pursuit template"
+        )
+        self.btn_snap_cam.setStyleSheet(
+            "background-color: #1e293b; border: 1px solid #38bdf8; border-radius: 4px; "
+            "color: #38bdf8; font-weight: bold; font-size: 10px; padding: 3px 6px;"
+        )
+        self.btn_snap_cam.clicked.connect(self.on_snap_camera_template)
+
         cb_layout.addWidget(self.lbl_camera_status, stretch=1)
         cb_layout.addWidget(self.btn_popup_cam)
         cb_layout.addWidget(self.btn_pin_view)
+        cb_layout.addWidget(self.btn_snap_cam)
         cam_layout.addWidget(cam_bar)
 
         left_layout.addWidget(cam_group)
@@ -2069,6 +2234,31 @@ class MappingDashboardWindow(QMainWindow):
         rr_layout.addWidget(self.btn_hot_reload)
 
         hud_layout.addWidget(respawn_row)
+
+        # Physical Robot Network & IP Auto-Discovery Row
+        net_row = QWidget()
+        net_layout = QHBoxLayout(net_row)
+        net_layout.setContentsMargins(0, 0, 0, 0)
+        net_layout.setSpacing(5)
+
+        self.lbl_robot_ip = QLabel("📡 IP: Standby")
+        self.lbl_robot_ip.setStyleSheet(
+            "background-color: #0f172a; border: 1px solid #334155; border-radius: 4px; "
+            "color: #38bdf8; font-size: 10px; font-weight: bold; padding: 4px;"
+        )
+        self.btn_detect_ip = QPushButton("🔍 Auto-Detect IP")
+        self.btn_detect_ip.setCursor(Qt.PointingHandCursor)
+        self.btn_detect_ip.setToolTip(
+            "Scan local hotspot / network ARP cache for active Khepera IV port 5000"
+        )
+        self.btn_detect_ip.setStyleSheet(
+            "background-color: #1e293b; border: 1px solid #0284c7; border-radius: 4px; "
+            "color: #e2e8f0; font-size: 10px; font-weight: bold; padding: 4px;"
+        )
+        self.btn_detect_ip.clicked.connect(self.on_auto_detect_robot_ip)
+        net_layout.addWidget(self.lbl_robot_ip, stretch=1)
+        net_layout.addWidget(self.btn_detect_ip)
+        hud_layout.addWidget(net_row)
 
         left_layout.addWidget(hud_group)
 
@@ -2564,17 +2754,36 @@ class MappingDashboardWindow(QMainWindow):
         self.update_map_plot()
 
     def on_canvas_press(self, event):
-        """Handle canvas mouse press for goal clicking, path drawing, or target placement."""
+        """Handle canvas mouse press for goal clicking, path drawing, or target drag/placement."""
         if event.inaxes != self.ax_map or event.xdata is None or event.ydata is None:
             return
-        x = float(np.clip(event.xdata, -2.40, 2.40))
-        y = float(np.clip(event.ydata, -2.40, 2.40))
+        x_canvas = float(event.xdata)
+        y_canvas = float(event.ydata)
+        x_world = float(np.clip(y_canvas, -2.40, 2.40))
+        y_world = float(np.clip(-x_canvas, -2.40, 2.40))
+
+        # Check for direct interactive target object dragging anytime
+        if hasattr(self, 'target_pose') and self.target_pose is not None:
+            tx, ty = self.target_pose[0], self.target_pose[1]
+            c_tx = -ty
+            c_ty = tx
+            if math.hypot(x_canvas - c_tx, y_canvas - c_ty) <= 0.25:
+                self.is_dragging_target = True
+                self.canvas.setCursor(Qt.ClosedHandCursor)
+                if hasattr(self, 'lbl_draw_info'):
+                    self.lbl_draw_info.setText(
+                        f"Dragging target object... ({x_world:+.2f}, {y_world:+.2f})"
+                    )
+                    self.lbl_draw_info.setStyleSheet("color: #38bdf8; font-size: 9.5px;")
+                return
 
         if self.map_interaction_mode == 'click_goal':
-            self.active_goal = (x, y)
+            self.active_goal = (x_world, y_world)
             if self.ros:
-                self.ros.send_user_goal(x, y)
-            self.lbl_draw_info.setText(f"Target set at ({x:.2f}, {y:.2f}). Starting autonomous pursuit.")
+                self.ros.send_user_goal(x_world, y_world)
+            self.lbl_draw_info.setText(
+                f"Target set at ({x_world:.2f}, {y_world:.2f}). Starting autonomous pursuit."
+            )
             self.btn_click_goal.setChecked(False)
             self.map_interaction_mode = 'none'
             if not self.is_auto_exploring:
@@ -2582,52 +2791,127 @@ class MappingDashboardWindow(QMainWindow):
             self.update_map_plot()
 
         elif self.map_interaction_mode == 'place_target':
-            self.target_pose = (x, y, 0.0)
+            self.target_pose = (x_world, y_world, 0.0)
+            if hasattr(self, 'spin_target_pos_x') and hasattr(self, 'spin_target_pos_y'):
+                self.spin_target_pos_x.blockSignals(True)
+                self.spin_target_pos_x.setValue(x_world)
+                self.spin_target_pos_x.blockSignals(False)
+                self.spin_target_pos_y.blockSignals(True)
+                self.spin_target_pos_y.setValue(y_world)
+                self.spin_target_pos_y.blockSignals(False)
             if hasattr(self, 'lbl_target_pose'):
-                self.lbl_target_pose.setText(f"Target Pose: (X: {x:+.2f}m, Y: {y:+.2f}m)")
+                self.lbl_target_pose.setText(
+                    f"Target Pose: (X: {x_world:+.2f}m, Y: {y_world:+.2f}m)"
+                )
             if hasattr(self, 'lbl_draw_info'):
-                self.lbl_draw_info.setText(f"Target relocated to ({x:.2f}, {y:.2f}).")
-                self.lbl_draw_info.setStyleSheet("color: #10b981; font-weight: bold; font-size: 9.5px;")
+                self.lbl_draw_info.setText(f"Target relocated to ({x_world:.2f}, {y_world:.2f}).")
+                self.lbl_draw_info.setStyleSheet(
+                    "color: #10b981; font-weight: bold; font-size: 9.5px;"
+                )
             if hasattr(self, 'btn_place_target'):
                 self.btn_place_target.setChecked(False)
             self.map_interaction_mode = 'none'
-            self.relocate_target(x, y, 0.0)
+            self.relocate_target(x_world, y_world, 0.0)
             self.update_map_plot()
 
         elif self.map_interaction_mode == 'draw_path':
             self.is_drawing_path = True
-            self.drawn_path = [(x, y)]
+            self.drawn_path = [(x_world, y_world)]
             self.lbl_draw_info.setText("Drawing path... (1 point)")
             self.update_map_plot()
 
     def on_canvas_motion(self, event):
-        """Handle canvas mouse drag for continuous path drawing."""
-        if not self.is_drawing_path or self.map_interaction_mode != 'draw_path':
-            return
+        """Handle canvas mouse drag for target dragging or continuous path drawing."""
         if event.inaxes != self.ax_map or event.xdata is None or event.ydata is None:
             return
-        x = float(np.clip(event.xdata, -2.40, 2.40))
-        y = float(np.clip(event.ydata, -2.40, 2.40))
+        x_canvas = float(event.xdata)
+        y_canvas = float(event.ydata)
+        x_world = float(np.clip(y_canvas, -2.40, 2.40))
+        y_world = float(np.clip(-x_canvas, -2.40, 2.40))
+
+        if getattr(self, 'is_dragging_target', False):
+            self.target_pose = (x_world, y_world, 0.0)
+            if hasattr(self, 'spin_target_pos_x') and hasattr(self, 'spin_target_pos_y'):
+                self.spin_target_pos_x.blockSignals(True)
+                self.spin_target_pos_x.setValue(x_world)
+                self.spin_target_pos_x.blockSignals(False)
+                self.spin_target_pos_y.blockSignals(True)
+                self.spin_target_pos_y.setValue(y_world)
+                self.spin_target_pos_y.blockSignals(False)
+            if hasattr(self, 'lbl_target_pose'):
+                self.lbl_target_pose.setText(
+                    f"Target Pose: (X: {x_world:+.2f}m, Y: {y_world:+.2f}m)"
+                )
+            if hasattr(self, 'lbl_draw_info'):
+                self.lbl_draw_info.setText(f"Dragging target: ({x_world:+.2f}, {y_world:+.2f})")
+            self._update_target_marker_canvas()
+            return
+
+        # Cursor hover feedback when near target
+        if not self.is_drawing_path and self.map_interaction_mode == 'none':
+            if hasattr(self, 'target_pose') and self.target_pose is not None:
+                tx, ty = self.target_pose[0], self.target_pose[1]
+                c_tx = -ty
+                c_ty = tx
+                if math.hypot(x_canvas - c_tx, y_canvas - c_ty) <= 0.25:
+                    self.canvas.setCursor(Qt.OpenHandCursor)
+                else:
+                    self.canvas.unsetCursor()
+
+        if not self.is_drawing_path or self.map_interaction_mode != 'draw_path':
+            return
 
         if not self.drawn_path:
-            self.drawn_path.append((x, y))
+            self.drawn_path.append((x_world, y_world))
             return
 
         lx, ly = self.drawn_path[-1]
-        if math.hypot(x - lx, y - ly) >= 0.08:  # 8cm spacing
-            self.drawn_path.append((x, y))
+        if math.hypot(x_world - lx, y_world - ly) >= 0.08:  # 8cm spacing
+            self.drawn_path.append((x_world, y_world))
             self.lbl_draw_info.setText(f"Drawing path: {len(self.drawn_path)} waypoints...")
             self.update_map_plot()
 
     def on_canvas_release(self, event):
-        """Handle canvas mouse release to finalize and dispatch drawn path."""
+        """Handle canvas mouse release to finalize target drag or dispatch drawn path."""
+        if getattr(self, 'is_dragging_target', False):
+            self.is_dragging_target = False
+            self.canvas.unsetCursor()
+            if event.inaxes == self.ax_map and event.xdata is not None and event.ydata is not None:
+                x_world = float(np.clip(event.ydata, -2.40, 2.40))
+                y_world = float(np.clip(-event.xdata, -2.40, 2.40))
+                self.target_pose = (x_world, y_world, 0.0)
+            if hasattr(self, 'target_pose') and self.target_pose is not None:
+                tx, ty = self.target_pose[0], self.target_pose[1]
+                if hasattr(self, 'spin_target_pos_x') and hasattr(self, 'spin_target_pos_y'):
+                    self.spin_target_pos_x.blockSignals(True)
+                    self.spin_target_pos_x.setValue(tx)
+                    self.spin_target_pos_x.blockSignals(False)
+                    self.spin_target_pos_y.blockSignals(True)
+                    self.spin_target_pos_y.setValue(ty)
+                    self.spin_target_pos_y.blockSignals(False)
+                if hasattr(self, 'lbl_target_pose'):
+                    self.lbl_target_pose.setText(f"Target Pose: (X: {tx:+.2f}m, Y: {ty:+.2f}m)")
+                if hasattr(self, 'lbl_draw_info'):
+                    self.lbl_draw_info.setText(
+                        f"Target placed at ({tx:.2f}, {ty:.2f}). Click '📍 Relocate' to commit."
+                    )
+                    self.lbl_draw_info.setStyleSheet(
+                        "color: #10b981; font-weight: bold; font-size: 9.5px;"
+                    )
+            self._update_target_marker_canvas()
+            return
+
         if self.is_drawing_path:
             self.is_drawing_path = False
             if len(self.drawn_path) >= 2:
                 if self.ros:
                     self.ros.send_user_path(self.drawn_path)
-                self.lbl_draw_info.setText(f"Path dispatched ({len(self.drawn_path)} waypoints). Starting exploration!")
-                self.lbl_draw_info.setStyleSheet("color: #10b981; font-weight: bold; font-size: 9.5px;")
+                self.lbl_draw_info.setText(
+                    f"Path dispatched ({len(self.drawn_path)} waypoints). Starting exploration!"
+                )
+                self.lbl_draw_info.setStyleSheet(
+                    "color: #10b981; font-weight: bold; font-size: 9.5px;"
+                )
                 if not self.is_auto_exploring:
                     self.on_toggle_auto_explore()
             self.btn_draw_path.setChecked(False)
@@ -2966,7 +3250,7 @@ class MappingDashboardWindow(QMainWindow):
                 geom_xml = "<box><size>0.12 0.12 0.12</size></box>"
                 # Unique timestamp filename to bust Ogre2 GPU texture cache
                 ts = int(time.time() * 1000)
-                tex_file = os.path.join(target_dir, f"target_texture_{ts}.png")
+                tex_file = os.path.join(target_dir, f"target_texture_{ts}_target_texture.png")
                 canonical_tex = os.path.join(target_dir, "target_texture.png")
 
                 if effective_img and os.path.isfile(effective_img):
@@ -3035,6 +3319,9 @@ class MappingDashboardWindow(QMainWindow):
             with open(sdf_file, "w", encoding="utf-8") as f:
                 f.write(sdf_content)
 
+            if not self.is_simulation:
+                return
+
             # Discover active Gazebo world name dynamically
             world_name = "khepera4_world"
             try:
@@ -3089,6 +3376,8 @@ class MappingDashboardWindow(QMainWindow):
             self.lbl_target_pose.setText(f"Target Pose: (X: {x:+.2f}m, Y: {y:+.2f}m)")
 
         def _relocate_bg():
+            if not self.is_simulation:
+                return
             target_z = 0.06
             qz = math.sin(yaw / 2.0)
             qw = math.cos(yaw / 2.0)
@@ -3196,10 +3485,12 @@ class MappingDashboardWindow(QMainWindow):
         self.spin_target_pos_x.setRange(-2.40, 2.40)
         self.spin_target_pos_x.setSingleStep(0.1)
         self.spin_target_pos_x.setValue(1.50)
+        self.spin_target_pos_x.valueChanged.connect(self._on_target_spinbox_changed)
         self.spin_target_pos_y = QDoubleSpinBox()
         self.spin_target_pos_y.setRange(-2.40, 2.40)
         self.spin_target_pos_y.setSingleStep(0.1)
         self.spin_target_pos_y.setValue(0.00)
+        self.spin_target_pos_y.valueChanged.connect(self._on_target_spinbox_changed)
         self.btn_relocate_target_input = QPushButton("📍 Relocate")
         self.btn_relocate_target_input.setCursor(Qt.PointingHandCursor)
         self.btn_relocate_target_input.setToolTip("Relocate target to designated (X, Y) coords.")
@@ -3229,9 +3520,8 @@ class MappingDashboardWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         lbl_desc = QLabel("Description:")
         lbl_desc.setStyleSheet("color: #38bdf8; font-weight: bold;")
-        self.edit_target_desc = QLineEdit(
-            "Bright red cylindrical soda can with white lettering, placed near arena boundary"
-        )
+        self.edit_target_desc = QLineEdit("")
+        self.edit_target_desc.setPlaceholderText("Enter target semantic description...")
         self.edit_target_desc.setStyleSheet(
             "background-color: #0f172a; border: 1px solid #334155; "
             "border-radius: 4px; padding: 3px;"
@@ -3239,6 +3529,38 @@ class MappingDashboardWindow(QMainWindow):
         layout.addWidget(lbl_desc)
         layout.addWidget(self.edit_target_desc, stretch=1)
         return row
+
+    def _on_target_spinbox_changed(self, value: float = 0.0):
+        """Synchronize target pose preview from spinbox adjustments when not dragging."""
+        if getattr(self, 'is_dragging_target', False):
+            return
+        if hasattr(self, 'spin_target_pos_x') and hasattr(self, 'spin_target_pos_y'):
+            x = self.spin_target_pos_x.value()
+            y = self.spin_target_pos_y.value()
+            self.target_pose = (x, y, 0.0)
+            if hasattr(self, 'lbl_target_pose'):
+                self.lbl_target_pose.setText(f"Target Pose: (X: {x:+.2f}m, Y: {y:+.2f}m)")
+            self._update_target_marker_canvas()
+
+    def _update_target_marker_canvas(self):
+        """Update target marker and text position on the map canvas smoothly."""
+        if not hasattr(self, '_target_rect') or not hasattr(self, '_target_marker'):
+            self.update_map_plot()
+            return
+        if hasattr(self, 'target_pose') and self.target_pose is not None:
+            tx, ty = self.target_pose[0], self.target_pose[1]
+            box_size = 0.12
+            c_tx = -ty
+            c_ty = tx
+            self._target_rect.set_xy((c_tx - box_size / 2.0, c_ty - box_size / 2.0))
+            self._target_marker.set_data([c_tx], [c_ty])
+            if hasattr(self, '_target_text'):
+                self._target_text.set_position((c_tx + 0.08, c_ty + 0.08))
+                self._target_text.set_text(f"Target Object ({tx:.2f}, {ty:.2f})")
+                self._target_text.set_visible(True)
+            self._target_rect.set_visible(True)
+            self._target_marker.set_visible(True)
+            self.canvas.draw_idle()
 
     def _update_color_button_style(self):
         """Update color picker button display with current selected QColor."""
@@ -3373,6 +3695,18 @@ class MappingDashboardWindow(QMainWindow):
         )
         self.btn_browse_template = QPushButton("Browse...")
         self.btn_browse_template.clicked.connect(self.on_browse_target_template)
+
+        self.btn_snap_template = QPushButton("📸 Snap Live")
+        self.btn_snap_template.setCursor(Qt.PointingHandCursor)
+        self.btn_snap_template.setToolTip(
+            "Capture live frame from Khepera IV camera and crop target object"
+        )
+        self.btn_snap_template.setStyleSheet(
+            "background-color: #1e293b; border: 1px solid #38bdf8; "
+            "color: #38bdf8; font-weight: bold; padding: 3px 6px;"
+        )
+        self.btn_snap_template.clicked.connect(self.on_snap_camera_template)
+
         self.btn_deploy_template = QPushButton("Deploy Template")
         self.btn_deploy_template.setStyleSheet(
             "background-color: #065f46; border: 1px solid #10b981; "
@@ -3398,6 +3732,7 @@ class MappingDashboardWindow(QMainWindow):
         layout.addWidget(lbl_tmpl)
         layout.addWidget(self.edit_target_img_path, stretch=1)
         layout.addWidget(self.btn_browse_template)
+        layout.addWidget(self.btn_snap_template)
         layout.addWidget(self.btn_deploy_template)
         layout.addWidget(self.lbl_target_img_preview)
         layout.addWidget(self.btn_target_panel_pursuit)
@@ -3654,6 +3989,131 @@ class MappingDashboardWindow(QMainWindow):
         """Update LightGlue inlier count telemetry display."""
         if hasattr(self, 'lbl_thinking_keypoints'):
             self.lbl_thinking_keypoints.setText(str(count) if count > 0 else "--")
+
+    @property
+    def is_simulation(self) -> bool:
+        """Return True if running in Gazebo simulation (use_sim_time=True)."""
+        ros_node = getattr(self.ros, 'node', None) if self.ros else None
+        if ros_node and hasattr(ros_node, 'has_parameter') and ros_node.has_parameter('use_sim_time'):
+            try:
+                return bool(ros_node.get_parameter('use_sim_time').value)
+            except Exception:
+                return False
+        return False
+
+    def on_auto_detect_robot_ip(self):
+        """Scan local hotspot / network ARP cache for active Khepera IV TCP daemon."""
+        if hasattr(self, 'btn_detect_ip'):
+            self.btn_detect_ip.setEnabled(False)
+            self.btn_detect_ip.setText("Scanning...")
+        if hasattr(self, 'lbl_robot_ip'):
+            self.lbl_robot_ip.setText("📡 Scanning ARP table & subnets...")
+
+        def _scan_worker():
+            found_ip = None
+            try:
+                candidates = []
+                if os.path.isfile('/proc/net/arp'):
+                    with open('/proc/net/arp', 'r', encoding='utf-8') as f:
+                        for line in f.readlines()[1:]:
+                            parts = line.split()
+                            if parts and len(parts) >= 4 and parts[2] != '0x0':
+                                ip = parts[0].strip()
+                                if (
+                                    ip not in ('0.0.0.0', '255.255.255.255')
+                                    and not ip.startswith('127.')
+                                ):
+                                    candidates.append(ip)
+
+                for base in ('10.42.0.', '192.168.137.', '192.168.1.'):
+                    for host in range(2, 60):
+                        cand = f"{base}{host}"
+                        if cand not in candidates:
+                            candidates.append(cand)
+
+                for ip in candidates:
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(0.08)
+                        res = s.connect_ex((ip, 5000))
+                        s.close()
+                        if res == 0:
+                            found_ip = ip
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            def _update_ui():
+                if hasattr(self, 'btn_detect_ip'):
+                    self.btn_detect_ip.setEnabled(True)
+                    self.btn_detect_ip.setText("🔍 Auto-Detect IP")
+                if hasattr(self, 'lbl_robot_ip'):
+                    if found_ip:
+                        self.lbl_robot_ip.setText(f"📡 IP: {found_ip} (Online)")
+                        self.lbl_robot_ip.setStyleSheet(
+                            "background-color: #064e3b; border: 1px solid #10b981; "
+                            "border-radius: 4px; color: #6ee7b7; font-size: 10px; "
+                            "font-weight: bold; padding: 4px;"
+                        )
+                        self.on_thinking_log_received(
+                            f"✅ [Hotspot IP] Found active Khepera IV at {found_ip}:5000"
+                        )
+                        self.on_feedback_received(f"[Network] Khepera IV detected at {found_ip}")
+                    else:
+                        self.lbl_robot_ip.setText("📡 IP: Not Detected")
+                        self.lbl_robot_ip.setStyleSheet(
+                            "background-color: #450a0a; border: 1px solid #ef4444; "
+                            "border-radius: 4px; color: #fca5a5; font-size: 10px; "
+                            "font-weight: bold; padding: 4px;"
+                        )
+                        self.on_thinking_log_received(
+                            "⚠️ [Hotspot IP] No active Khepera IV found on port 5000."
+                        )
+
+            QTimer.singleShot(0, _update_ui)
+
+        threading.Thread(target=_scan_worker, daemon=True).start()
+
+    def on_snap_camera_template(self):
+        """Open interactive camera snapshot and ROI crop dialog to deploy target template."""
+        if not hasattr(self, 'latest_camera_frame') or self.latest_camera_frame is None:
+            self.on_feedback_received("⚠️ No camera frame received on /camera/image_raw yet.")
+            self.on_thinking_log_received(
+                "⚠️ [Snapshot] Awaiting /camera/image_raw stream before capturing."
+            )
+            return
+
+        dialog = TargetCropDialog(self.latest_camera_frame, parent=self)
+        if dialog.exec_() == QDialog.Accepted and dialog.cropped_bgr is not None:
+            cropped = dialog.cropped_bgr
+            if cropped.size == 0 or cropped.shape[0] < 10 or cropped.shape[1] < 10:
+                self.on_feedback_received("⚠️ Cropped region too small. Please select a larger area.")
+                return
+
+            save_path = "/tmp/khepera_live_target_template.png"
+            cv2.imwrite(save_path, cropped)
+
+            if hasattr(self, 'edit_target_img_path'):
+                self.edit_target_img_path.setText(save_path)
+            if hasattr(self, 'lbl_target_img_preview'):
+                pix = QPixmap(save_path)
+                if not pix.isNull():
+                    self.lbl_target_img_preview.setPixmap(
+                        pix.scaled(45, 45, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    )
+
+            target_name = (
+                self.edit_target_name.text().strip()
+                if hasattr(self, 'edit_target_name') and self.edit_target_name.text().strip()
+                else "Live Target"
+            )
+            self.on_thinking_log_received(
+                f"📸 [Live Target Captured] Reference template ({cropped.shape[1]}x{cropped.shape[0]} px) "
+                f"captured from Khepera IV camera for '{target_name}'."
+            )
+            self.on_deploy_target_template()
 
     def on_browse_target_template(self):
         """Open file dialog to pick reference target template image."""
@@ -4023,35 +4483,36 @@ class MappingDashboardWindow(QMainWindow):
         self.on_recenter_clicked()
         self.on_clear_map_clicked()
 
-        # 5. Remove custom target model from Gazebo world
-        def _remove_gz_target():
-            try:
-                world_name = "khepera4_world"
-                proc = subprocess.run(
-                    ['gz', 'service', '-l'],
-                    capture_output=True, text=True, timeout=2.0
-                )
-                for line in proc.stdout.splitlines():
-                    parts = line.strip().split('/')
-                    if (
-                        len(parts) >= 4
-                        and parts[1] == 'world'
-                        and parts[3] in ('create', 'remove')
-                    ):
-                        world_name = parts[2]
-                        break
-                subprocess.run([
-                    'gz', 'service',
-                    '-s', f'/world/{world_name}/remove',
-                    '--reqtype', 'gz.msgs.Entity',
-                    '--reptype', 'gz.msgs.Boolean',
-                    '--timeout', '2000',
-                    '--req', 'name: "custom_target_object" type: MODEL'
-                ], capture_output=True, timeout=2.5)
-            except Exception:
-                pass
+        # 5. Remove custom target model from Gazebo world (simulation only)
+        if self.is_simulation:
+            def _remove_gz_target():
+                try:
+                    world_name = "khepera4_world"
+                    proc = subprocess.run(
+                        ['gz', 'service', '-l'],
+                        capture_output=True, text=True, timeout=2.0
+                    )
+                    for line in proc.stdout.splitlines():
+                        parts = line.strip().split('/')
+                        if (
+                            len(parts) >= 4
+                            and parts[1] == 'world'
+                            and parts[3] in ('create', 'remove')
+                        ):
+                            world_name = parts[2]
+                            break
+                    subprocess.run([
+                        'gz', 'service',
+                        '-s', f'/world/{world_name}/remove',
+                        '--reqtype', 'gz.msgs.Entity',
+                        '--reptype', 'gz.msgs.Boolean',
+                        '--timeout', '2000',
+                        '--req', 'name: "custom_target_object" type: MODEL'
+                    ], capture_output=True, timeout=2.5)
+                except Exception:
+                    pass
 
-        threading.Thread(target=_remove_gz_target, daemon=True).start()
+            threading.Thread(target=_remove_gz_target, daemon=True).start()
 
         # 6. Reset UI buttons, badges, logs, and dials to initial boot defaults
         self.is_pursuit_active = False
@@ -4402,8 +4863,8 @@ class MappingDashboardWindow(QMainWindow):
             self.ax_map.tick_params(colors='#64748b', labelsize=8)
             for spine in self.ax_map.spines.values():
                 spine.set_color('#1e293b')
-            self.ax_map.set_xlabel("X [meters]", color='#94a3b8', fontsize=8, labelpad=2)
-            self.ax_map.set_ylabel("Y [meters]", color='#94a3b8', fontsize=8, labelpad=2)
+            self.ax_map.set_xlabel("X' [meters]", color='#94a3b8', fontsize=8, labelpad=2)
+            self.ax_map.set_ylabel("Y' [meters]", color='#94a3b8', fontsize=8, labelpad=2)
             self._axes_initialized = True
 
         if self.show_grid:
@@ -4499,14 +4960,23 @@ class MappingDashboardWindow(QMainWindow):
                     rgba[observed, 2] = gray_val
                     rgba[observed, 3] = 0.90
 
-                extent = [ox, ox + w * res, oy, oy + h * res]
-                if getattr(self, '_map_img_artist', None) is None or self._map_img_artist not in self.ax_map.images:
+                # 90-degree CCW map rotation:
+                # World (X, Y) -> Canvas (X', Y') = (-Y, X)
+                # Extent [xmin, xmax, ymin, ymax] -> [-Ymax, -Ymin, Xmin, Xmax]
+                # In Cartesian space with origin='lower', 90 deg CCW rotation from +X to +Y
+                # is np.rot90(rgba, 1, axes=(1, 0)).
+                rgba_rot = np.rot90(rgba, 1, axes=(1, 0))
+                extent = [-(oy + h * res), -oy, ox, ox + w * res]
+                if (
+                    getattr(self, '_map_img_artist', None) is None
+                    or self._map_img_artist not in self.ax_map.images
+                ):
                     self._map_img_artist = self.ax_map.imshow(
-                        rgba, origin='lower', extent=extent,
+                        rgba_rot, origin='lower', extent=extent,
                         interpolation='nearest', zorder=1
                     )
                 else:
-                    self._map_img_artist.set_data(rgba)
+                    self._map_img_artist.set_data(rgba_rot)
                     self._map_img_artist.set_extent(extent)
                     self._map_img_artist.set_visible(True)
 
@@ -4514,8 +4984,8 @@ class MappingDashboardWindow(QMainWindow):
                 self._last_rendered_map_msg = current_map_msg
                 self._last_rendered_layer_mode = self.map_layer_mode
                 self._map_layer_dirty = False
-                self._last_rendered_rgba = rgba
-                self._last_grid_meta = (ox, oy, w, h, res)
+                self._last_rendered_rgba = rgba_rot
+                self._last_grid_meta = (-(oy + h * res), ox, h, w, res)
             except Exception:
                 has_rendered_grid = False
                 if getattr(self, '_map_img_artist', None) is not None and self._map_img_artist in self.ax_map.images:
@@ -4563,7 +5033,9 @@ class MappingDashboardWindow(QMainWindow):
             )[0]
         if self.show_trajectory and len(self.robot_path) > 1:
             px, py = zip(*self.robot_path)
-            self._traj_line.set_data(px, py)
+            c_px = [-y for y in py]
+            c_py = list(px)
+            self._traj_line.set_data(c_px, c_py)
             self._traj_line.set_visible(True)
         else:
             self._traj_line.set_visible(False)
@@ -4578,8 +5050,10 @@ class MappingDashboardWindow(QMainWindow):
             )[0]
         if len(self.drawn_path) > 1:
             ux, uy = zip(*self.drawn_path)
-            self._drawn_line.set_data(ux, uy)
-            self._drawn_pts.set_data(ux, uy)
+            c_ux = [-y for y in uy]
+            c_uy = list(ux)
+            self._drawn_line.set_data(c_ux, c_uy)
+            self._drawn_pts.set_data(c_ux, c_uy)
             self._drawn_line.set_visible(True)
             self._drawn_pts.set_visible(True)
         else:
@@ -4610,10 +5084,12 @@ class MappingDashboardWindow(QMainWindow):
             )
         if self.active_goal is not None and not getattr(self, 'is_pursuit_active', False):
             gx, gy = self.active_goal
-            self._goal_circle.set_data([gx], [gy])
-            self._goal_cross.set_data([gx], [gy])
-            self._goal_dot.set_data([gx], [gy])
-            self._goal_text.set_position((gx + 0.08, gy + 0.08))
+            c_gx = -gy
+            c_gy = gx
+            self._goal_circle.set_data([c_gx], [c_gy])
+            self._goal_cross.set_data([c_gx], [c_gy])
+            self._goal_dot.set_data([c_gx], [c_gy])
+            self._goal_text.set_position((c_gx + 0.08, c_gy + 0.08))
             self._goal_text.set_text(f"Frontier ({gx:.2f}, {gy:.2f})")
             self._goal_circle.set_visible(True)
             self._goal_cross.set_visible(True)
@@ -4650,13 +5126,15 @@ class MappingDashboardWindow(QMainWindow):
             tx, ty, tyaw = self.target_pose
             if math.isfinite(tx) and math.isfinite(ty):
                 box_size = 0.12
-                self._target_rect.set_xy((tx - box_size / 2.0, ty - box_size / 2.0))
+                c_tx = -ty
+                c_ty = tx
+                self._target_rect.set_xy((c_tx - box_size / 2.0, c_ty - box_size / 2.0))
                 self._target_rect.set_width(box_size)
                 self._target_rect.set_height(box_size)
                 self._target_rect.set_visible(True)
-                self._target_marker.set_data([tx], [ty])
+                self._target_marker.set_data([c_tx], [c_ty])
                 self._target_marker.set_visible(True)
-                self._target_text.set_position((tx + 0.08, ty + 0.08))
+                self._target_text.set_position((c_tx + 0.08, c_ty + 0.08))
                 self._target_text.set_text(f"Target Object ({tx:.2f}, {ty:.2f})")
                 self._target_text.set_visible(True)
             else:
@@ -4684,6 +5162,8 @@ class MappingDashboardWindow(QMainWindow):
             )[0]
 
         rx, ry, ryaw = self.robot_x, self.robot_y, self.robot_yaw
+        c_rx = -ry
+        c_ry = rx
         has_scan = False
         if self.show_sensor_beams and self.latest_scan is not None:
             try:
@@ -4703,19 +5183,21 @@ class MappingDashboardWindow(QMainWindow):
                     beam_angle = ryaw + angle_min + i * angle_inc
                     hit_x = rx + r * math.cos(beam_angle)
                     hit_y = ry + r * math.sin(beam_angle)
+                    c_hit_x = -hit_y
+                    c_hit_y = hit_x
 
                     if r < 0.25:
-                        ir_x.extend([rx, hit_x, np.nan])
-                        ir_y.extend([ry, hit_y, np.nan])
+                        ir_x.extend([c_rx, c_hit_x, np.nan])
+                        ir_y.extend([c_ry, c_hit_y, np.nan])
                         if r < 1.95:
-                            ir_pt_x.append(hit_x)
-                            ir_pt_y.append(hit_y)
+                            ir_pt_x.append(c_hit_x)
+                            ir_pt_y.append(c_hit_y)
                     else:
-                        us_x.extend([rx, hit_x, np.nan])
-                        us_y.extend([ry, hit_y, np.nan])
+                        us_x.extend([c_rx, c_hit_x, np.nan])
+                        us_y.extend([c_ry, c_hit_y, np.nan])
                         if r < 1.95:
-                            us_pt_x.append(hit_x)
-                            us_pt_y.append(hit_y)
+                            us_pt_x.append(c_hit_x)
+                            us_pt_y.append(c_hit_y)
 
                 self._scan_ir_rays.set_data(ir_x, ir_y)
                 self._scan_ir_pts.set_data(ir_pt_x, ir_pt_y)
@@ -4756,7 +5238,11 @@ class MappingDashboardWindow(QMainWindow):
                 p_right = (cam_x + fov_dist * math.cos(ryaw - half_fov),
                            cam_y + fov_dist * math.sin(ryaw - half_fov))
 
-                self._fov_wedge.set_xy([(cam_x, cam_y), p_left, p_right])
+                c_cam = (-cam_y, cam_x)
+                c_left = (-p_left[1], p_left[0])
+                c_right = (-p_right[1], p_right[0])
+
+                self._fov_wedge.set_xy([c_cam, c_left, c_right])
                 self._fov_wedge.set_visible(True)
                 self.fov_patch = self._fov_wedge
             except Exception:
@@ -4781,41 +5267,44 @@ class MappingDashboardWindow(QMainWindow):
                     pass
             self.keyframe_artists.clear()
             for idx, (kx, ky, kyaw, _, label) in enumerate(self.visual_keyframes):
+                c_kx = -ky
+                c_ky = kx
                 line_artist = self.ax_map.plot(
-                    kx, ky, 's', color='#f59e0b', markersize=6.5,
+                    c_kx, c_ky, 's', color='#f59e0b', markersize=6.5,
                     markeredgecolor='#ffffff', markeredgewidth=1.2, zorder=6
                 )[0]
                 text_artist = self.ax_map.text(
-                    kx + 0.04, ky + 0.04, f"[CAM #{idx + 1}]",
+                    c_kx + 0.04, c_ky + 0.04, f"[CAM #{idx + 1}]",
                     color='#fef08a', fontsize=7.5, fontweight='bold', zorder=7
                 )
                 self.keyframe_artists.append((line_artist, text_artist))
 
         # 6. Draw Khepera IV True-Scale Footprint (Radius: 0.070 m = 140 mm diameter)
+        c_yaw = ryaw + math.pi / 2.0
         if not hasattr(self, '_khep_circle') or self._khep_circle not in self.ax_map.patches:
             self._khep_circle = Circle(
-                (rx, ry), 0.070, facecolor='#0284c7', edgecolor='#7dd3fc',
+                (c_rx, c_ry), 0.070, facecolor='#0284c7', edgecolor='#7dd3fc',
                 linewidth=2.0, alpha=0.85, zorder=5
             )
             self.ax_map.add_patch(self._khep_circle)
             self._khep_arrow = self.ax_map.annotate(
-                '', xy=(rx, ry), xytext=(rx, ry),
+                '', xy=(c_rx, c_ry), xytext=(c_rx, c_ry),
                 arrowprops={
                     "arrowstyle": "-|>", "color": "#ffffff", "lw": 2.2, "mutation_scale": 14
                 },
                 zorder=6
             )
             self._khep_dot = self.ax_map.plot(
-                [rx], [ry], 'o', color='#ffffff', markersize=3, zorder=7
+                [c_rx], [c_ry], 'o', color='#ffffff', markersize=3, zorder=7
             )[0]
 
-        self._khep_circle.center = (rx, ry)
+        self._khep_circle.center = (c_rx, c_ry)
         arrow_len = 0.16
-        hx = rx + arrow_len * math.cos(ryaw)
-        hy = ry + arrow_len * math.sin(ryaw)
+        hx = c_rx + arrow_len * math.cos(c_yaw)
+        hy = c_ry + arrow_len * math.sin(c_yaw)
         self._khep_arrow.xy = (hx, hy)
-        self._khep_arrow.set_position((rx, ry))
-        self._khep_dot.set_data([rx], [ry])
+        self._khep_arrow.set_position((c_rx, c_ry))
+        self._khep_dot.set_data([c_rx], [c_ry])
 
         # 7. Apply View Bounds & Zoom
         base_half_span = 3.5 * self.zoom_level

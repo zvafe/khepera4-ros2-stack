@@ -14,6 +14,7 @@ def generate_launch_description():
     pkg_share_parent = os.path.dirname(pkg_share)
     urdf_path = os.path.join(pkg_share, 'urdf', 'khepera4.urdf')
     default_world_path = os.path.join(pkg_share, 'worlds', 'khepera4_world.sdf')
+    gui_config_path = os.path.join(pkg_share, 'config', 'khepera4_gui.config')
 
     with open(urdf_path, 'r') as f:
         robot_desc = f.read()
@@ -60,7 +61,7 @@ def generate_launch_description():
     }
 
     start_gazebo_gui = ExecuteProcess(
-        cmd=['gz', 'sim', '-r', LaunchConfiguration('world')],
+        cmd=['gz', 'sim', '-r', '--gui-config', gui_config_path, LaunchConfiguration('world')],
         output='screen',
         additional_env=gz_env,
         condition=UnlessCondition(LaunchConfiguration('headless')),

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Single Physical Khepera IV Robot Operations Launch File.
+
 Connects directly to ONE physical Khepera IV mobile robot in the lab via Wi-Fi TCP daemon.
 
 Launches:
@@ -19,8 +20,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -92,6 +94,18 @@ def generate_launch_description():
         'camera_port',
         default_value='5001',
         description='TCP port of GStreamer camera stream on the robot (default: 5001)'
+    )
+
+    cmd_vel_topic_arg = DeclareLaunchArgument(
+        'cmd_vel_topic',
+        default_value='/cmd_vel',
+        description='Velocity command topic for explorer (/cmd_vel or /explorer/cmd_vel)'
+    )
+
+    visual_pursuit_arg = DeclareLaunchArgument(
+        'visual_pursuit',
+        default_value='false',
+        description='Launch visual perception and pursuit pipeline (default: false)'
     )
 
     # 1. Hardware Bridge Node
@@ -235,6 +249,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': False,
             'enabled': False,
+            'cmd_vel_topic': LaunchConfiguration('cmd_vel_topic'),
             'linear_speed': 0.12,
             'reverse_speed': 0.05,
             'turn_speed': 0.90,
@@ -247,10 +262,29 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('auto_explore'))
     )
 
+    # 7. Visual Perception & Pursuit Pipeline (Optional)
+    pursuit_include = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('khepera_visual_pursuit'),
+                'launch',
+                'perception_pipeline.launch.py'
+            )
+        ),
+        launch_arguments={
+            'use_sim_time': 'false',
+            'launch_controller': 'true',
+            'launch_supervisor': 'true',
+        }.items(),
+        condition=IfCondition(LaunchConfiguration('visual_pursuit'))
+    )
+
     return LaunchDescription([
         robot_ip_arg,
         robot_port_arg,
         camera_port_arg,
+        cmd_vel_topic_arg,
+        visual_pursuit_arg,
         robot_name_arg,
         mock_arg,
         dashboard_arg,
@@ -265,5 +299,6 @@ def generate_launch_description():
         mapper_node,
         dashboard_node,
         rviz_node,
-        explorer_node
+        explorer_node,
+        pursuit_include
     ])
