@@ -268,10 +268,11 @@ menu_single_robot() {
             echo -e "${BOLD}  Visual Pursuit & Servoing Pipeline (Khepera IV)                 ${NC}"
             echo -e "${CYAN}==================================================================${NC}"
             echo " 1) 🚀 Launch Gazebo Sim + Mapping + Visual Pursuit (End-to-End Simulation Arena)"
-            echo " 2) Online Nodes: Perception + IBVS Visual Servoing (Connects to running robot / sim)"
-            echo " 3) Online Nodes: Perception Only (YOLO-World + DINOv2 Verifier + LightGlue Tracker)"
-            echo " 4) Back"
-            read -r -p "Select execution mode [1-4] (default: 1): " pursuit_mode
+            echo " 2) 🔌 Launch Physical Robot Visual Pursuit (Direct Wi-Fi / Hotspot Deploy)"
+            echo " 3) Online Nodes: Perception + IBVS Visual Servoing (Connects to running robot / sim)"
+            echo " 4) Online Nodes: Perception Only (YOLO-World + DINOv2 Verifier + LightGlue Tracker)"
+            echo " 5) Back"
+            read -r -p "Select execution mode [1-5] (default: 1): " pursuit_mode
             case "${pursuit_mode:-1}" in
                 1)
                     read -r -p "Target template image path (leave empty for live stream): " tgt_img
@@ -283,6 +284,17 @@ menu_single_robot() {
                     dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit sim_visual_pursuit.launch.py launch_controller:=true${TGT_PARAM}"
                     ;;
                 2)
+                    read -r -p "Enter Khepera Robot IP (default: ${KHEPERA_1_IP:-192.168.1.101}): " phys_ip_in
+                    PHYS_IP="${phys_ip_in:-${KHEPERA_1_IP:-192.168.1.101}}"
+                    read -r -p "Target template image path (leave empty for live stream): " tgt_img
+                    TGT_PARAM=""
+                    if [ -n "$tgt_img" ]; then
+                        TGT_PARAM=" target_image_path:=\"${tgt_img}\""
+                    fi
+                    ask_execution_platform
+                    dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit physical_visual_pursuit.launch.py robot_ip:=${PHYS_IP} dashboard:=true rviz:=false${TGT_PARAM}"
+                    ;;
+                3)
                     read -r -p "Target template image path (leave empty for live stream): " tgt_img
                     TGT_PARAM=""
                     if [ -n "$tgt_img" ]; then
@@ -291,7 +303,7 @@ menu_single_robot() {
                     ask_execution_platform
                     dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit perception_pipeline.launch.py launch_controller:=true${TGT_PARAM}"
                     ;;
-                3)
+                4)
                     read -r -p "Target template image path (leave empty for live stream): " tgt_img
                     TGT_PARAM=""
                     if [ -n "$tgt_img" ]; then
@@ -384,52 +396,131 @@ menu_mock_physical() {
     esac
 }
 
+scan_for_robot_ip() {
+    echo -e "${YELLOW}🔍 Scanning local hotspot and ARP cache for active Khepera IV (port 5000)...${NC}"
+    local detected=""
+    detected=$(python3 -c "
+import socket, os
+
+candidates = []
+if os.path.isfile('/proc/net/arp'):
+    with open('/proc/net/arp', 'r') as f:
+        for line in f.readlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] != '0x0':
+                ip = parts[0].strip()
+                if ip not in ('0.0.0.0', '255.255.255.255') and not ip.startswith('127.'):
+                    candidates.append(ip)
+
+for base in ('10.42.0.', '192.168.137.', '192.168.1.'):
+    for host in range(2, 60):
+        c = f'{base}{host}'
+        if c not in candidates:
+            candidates.append(c)
+
+found = None
+for ip in candidates:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.08)
+        if s.connect_ex((ip, 5000)) == 0:
+            found = ip
+            s.close()
+            break
+        s.close()
+    except Exception:
+        pass
+
+if found:
+    print(found)
+" 2>/dev/null || true)
+    if [ -n "$detected" ]; then
+        echo -e "${GREEN}✓ Found active Khepera IV robot: ${BOLD}${detected}${NC}"
+        ROBOT_IP="$detected"
+    else
+        echo -e "${YELLOW}⚠️  No robot detected on port 5000.${NC}"
+    fi
+}
+
 menu_physical_lab() {
     clear_screen
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${BOLD}  PHYSICAL KHEPERA IV ROBOT (Classroom Lab Wi-Fi Connection)       ${NC}"
+    echo -e "${BOLD}  PHYSICAL KHEPERA IV ROBOT DEPLOYMENT (Wi-Fi / Hotspot)          ${NC}"
     echo -e "${CYAN}==================================================================${NC}"
-    read -r -p "Enter Khepera Robot IP (default: ${KHEPERA_1_IP:-192.168.137.43}): " robot_ip_input
-    ROBOT_IP="${robot_ip_input:-${KHEPERA_1_IP:-192.168.137.43}}"
+    DEFAULT_IP="${KHEPERA_1_IP:-192.168.1.101}"
+    read -r -p "Enter Khepera Robot IP (default: ${DEFAULT_IP}, 'scan' to auto-detect): " robot_ip_input
+    if [ "${robot_ip_input}" = "scan" ] || [ "${robot_ip_input}" = "auto" ]; then
+        scan_for_robot_ip
+        ROBOT_IP="${ROBOT_IP:-${DEFAULT_IP}}"
+    else
+        ROBOT_IP="${robot_ip_input:-${DEFAULT_IP}}"
+    fi
 
     echo ""
-    echo " 1) Test Ping & Network Reachability to ${ROBOT_IP}"
-    echo " 2) Connect Single Robot: Bridge + Mapper + Dashboard"
-    echo " 3) Connect Single Robot: Bridge + Mapper + Dashboard + RViz2"
-    echo " 4) Launch Keyboard Teleoperation (/cmd_vel)"
-    echo " 5) Save Active 2D Map to maps/"
-    echo " 6) USB Serial Programming & Swarm Provisioner (First-time setup / Recovery)"
-    echo " 7) Back to Main Menu"
+    echo -e "Target Robot: ${GREEN}${BOLD}${ROBOT_IP}${NC}"
     echo ""
-    read -r -p "Select option [1-7]: " choice
+    echo " 1) 🚀 Launch Physical Visual Pursuit (Bridge + Camera + Perception + Dashboard)"
+    echo " 2) 🚀 Launch Physical Visual Pursuit with RViz2"
+    echo " 3) Connect Single Robot: Bridge + Mapper + Dashboard"
+    echo " 4) Connect Single Robot: Bridge + Mapper + Dashboard + RViz2"
+    echo " 5) Test Ping & Network Reachability to ${ROBOT_IP}"
+    echo " 6) 🔍 Auto-Scan Subnet / Hotspot for Robot IP"
+    echo " 7) Launch Keyboard Teleoperation (/cmd_vel)"
+    echo " 8) Save Active 2D Map to maps/"
+    echo " 9) USB Serial Programming & Swarm Provisioner (First-time setup / Recovery)"
+    echo " 10) Back to Main Menu"
+    echo ""
+    read -r -p "Select option [1-10] (default: 1): " choice
 
-    case "$choice" in
+    case "${choice:-1}" in
         1)
-            ping -c 3 "${ROBOT_IP}" || echo -e "${RED}Robot not reachable at ${ROBOT_IP}. Check lab Wi-Fi/router.${NC}"
-            read -r -p "Press [Enter] to continue..."
+            read -r -p "Target template image path (leave empty for live camera snapshot): " tgt_img
+            TGT_PARAM=""
+            if [ -n "$tgt_img" ]; then
+                TGT_PARAM=" target_image_path:=\"${tgt_img}\""
+            fi
+            ask_execution_platform
+            dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit physical_visual_pursuit.launch.py robot_ip:=${ROBOT_IP} dashboard:=true rviz:=false${TGT_PARAM}"
             ;;
         2)
+            read -r -p "Target template image path (leave empty for live camera snapshot): " tgt_img
+            TGT_PARAM=""
+            if [ -n "$tgt_img" ]; then
+                TGT_PARAM=" target_image_path:=\"${tgt_img}\""
+            fi
             ask_execution_platform
-            dispatch_ros2_cmd "ros2 launch khepera4_control single_robot_physical.launch.py robot_ip:=${ROBOT_IP} dashboard:=true rviz:=false"
+            dispatch_ros2_cmd "ros2 launch khepera_visual_pursuit physical_visual_pursuit.launch.py robot_ip:=${ROBOT_IP} dashboard:=true rviz:=true${TGT_PARAM}"
             ;;
         3)
             ask_execution_platform
-            dispatch_ros2_cmd "ros2 launch khepera4_control single_robot_physical.launch.py robot_ip:=${ROBOT_IP} dashboard:=true rviz:=true"
+            dispatch_ros2_cmd "ros2 launch khepera4_control single_robot_physical.launch.py robot_ip:=${ROBOT_IP} dashboard:=true rviz:=false"
             ;;
         4)
             ask_execution_platform
-            dispatch_ros2_cmd "ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/cmd_vel"
+            dispatch_ros2_cmd "ros2 launch khepera4_control single_robot_physical.launch.py robot_ip:=${ROBOT_IP} dashboard:=true rviz:=true"
             ;;
         5)
+            ping -c 3 "${ROBOT_IP}" || echo -e "${RED}Robot not reachable at ${ROBOT_IP}. Check Wi-Fi/hotspot.${NC}"
+            read -r -p "Press [Enter] to continue..."
+            ;;
+        6)
+            scan_for_robot_ip
+            read -r -p "Press [Enter] to continue..."
+            ;;
+        7)
+            ask_execution_platform
+            dispatch_ros2_cmd "ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/cmd_vel"
+            ;;
+        8)
             ask_execution_platform
             dispatch_ros2_cmd "ros2 service call /save_map std_srvs/srv/Trigger"
             read -r -p "Press [Enter] to continue..."
             ;;
-        6)
+        9)
             python3 "${WS_ROOT}/physical_robot/khepera_serial_provisioner.py"
             read -r -p "Press [Enter] to continue..."
             ;;
-        7)
+        10)
             return
             ;;
         *)
@@ -498,7 +589,7 @@ while true; do
     echo "   1) 🏎️  Single Robot Simulation (Gazebo, Mapping, Closed-Loop, Benchmarks)"
     echo "   2) 👥  Swarm Fleet Simulation (3 Robots, Midpoint Formation)"
     echo "   3) 🧪  Mock Mode (Hardware Emulation without Gazebo)"
-    echo "   4) 🔌  Physical Khepera IV Robot (Lab Wi-Fi Connection)"
+    echo "   4) 🔌  Physical Khepera IV Robot Deploy (Wi-Fi / Hotspot Visual Pursuit)"
     echo ""
     echo -e " ${BOLD}Tools, Dashboards & Maintenance:${NC}"
     echo "   5) 🎛️  Dashboards, RViz2 & Keyboard Teleop"
