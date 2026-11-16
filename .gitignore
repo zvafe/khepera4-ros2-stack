@@ -71,3 +71,8 @@ weights/
 # Test & coverage artifacts
 .coverage*
 coverage.xml
+
+# MIC eval runtime frames and logs
+src/tools/mic_eval/frames/
+src/tools/mic_eval/*.json
+/tmp/mic_eval/

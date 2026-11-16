@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""
-Mapping & Exploration Launch File for Khepera IV Mobile Robot.
+"""Mapping and exploration launch file for Khepera IV mobile robot.
+
 Supports both High-Fidelity Simulation (Gazebo Harmonic) and Physical Hardware Deployment.
 
 Modes:
@@ -109,6 +109,11 @@ def generate_launch_description():
         description='Linear exploration speed in m/s (default: 0.35 for rapid full-speed mapping)'
     )
 
+    cmd_vel_topic_arg = DeclareLaunchArgument(
+        'cmd_vel_topic',
+        default_value='/cmd_vel',
+        description='Velocity command topic for explorer'
+    )
 
     # Condition: Simulation Mode
     is_sim_mode = PythonExpression(["'", LaunchConfiguration('mode'), "' == 'sim'"])
@@ -240,7 +245,8 @@ def generate_launch_description():
             'obstacle_avoid_dist': 0.40,
             'obstacle_stop_dist': 0.08,
             'cliff_backup_duration': 1.2,
-            'control_rate': 20.0
+            'control_rate': 20.0,
+            'cmd_vel_topic': LaunchConfiguration('cmd_vel_topic'),
         }],
         condition=IfCondition(LaunchConfiguration('launch_explorer'))
     )
@@ -284,6 +290,7 @@ def generate_launch_description():
         rviz_arg,
         use_sim_time_arg,
         linear_speed_arg,
+        cmd_vel_topic_arg,
         sim_launch,
         robot_state_pub_node,
         hardware_bridge_node,

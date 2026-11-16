@@ -653,6 +653,7 @@ class MappingRosWorker(QObject):
         self.target_prompt_pub = self.node.create_publisher(String, '/pursuit/target_prompt', 10)
         self.pursuit_mode_pub = self.node.create_publisher(String, '/pursuit/mode', 10)
         self.pursuit_enable_pub = self.node.create_publisher(Bool, '/pursuit/enable', 10)
+        self.stop_reset_pub = self.node.create_publisher(Bool, '/target_found_and_stopped', 10)
         self.user_goal_pub = self.node.create_publisher(PoseStamped, '/explorer/user_goal', 10)
         self.user_path_pub = self.node.create_publisher(Path, '/explorer/user_path', 10)
         self.clear_path_pub = self.node.create_publisher(Bool, '/explorer/clear_path', 10)
@@ -874,6 +875,30 @@ class MappingRosWorker(QObject):
             msg = Bool()
             msg.data = bool(enable)
             self.pursuit_enable_pub.publish(msg)
+
+    def publish_target_stopped(self, stopped: bool):
+        """Publish stop reset or halt state on /target_found_and_stopped."""
+        if (
+            self.node
+            and hasattr(self, 'stop_reset_pub')
+            and self.stop_reset_pub
+            and self.node.context.ok()
+        ):
+            msg = Bool()
+            msg.data = bool(stopped)
+            self.stop_reset_pub.publish(msg)
+
+    def set_explorer_enable(self, enable: bool):
+        """Publish directly to /explorer/enable topic."""
+        if (
+            self.node
+            and hasattr(self, 'explorer_enable_pub')
+            and self.explorer_enable_pub
+            and self.node.context.ok()
+        ):
+            msg = Bool()
+            msg.data = bool(enable)
+            self.explorer_enable_pub.publish(msg)
 
     def kill_explorer_instances(self):
         """Immediately stop and kill all active reactive_explorer instances."""
@@ -2648,9 +2673,16 @@ class MappingDashboardWindow(QMainWindow):
                     f"🎯 [Pursuit] Mode B Reference Image Template engaged for '{target_name}'."
                 )
 
-            # 3. Enable visual pursuit controller (/pursuit/enable)
+            # 3. Reset stop state and enable visual pursuit controller
             if self.ros:
-                self.ros.set_pursuit_enable(True)
+                if hasattr(self.ros, 'publish_target_stopped'):
+                    self.ros.publish_target_stopped(False)
+                if hasattr(self.ros, 'set_explorer_enable'):
+                    self.ros.set_explorer_enable(True)
+                if hasattr(self.ros, 'set_pursuit_enable'):
+                    self.ros.set_pursuit_enable(True)
+                if hasattr(self, '_sync_speed_limits_to_robot'):
+                    self._sync_speed_limits_to_robot()
 
             if hasattr(self, 'lbl_thinking_motion_badge'):
                 self.lbl_thinking_motion_badge.setText("TARGET_PURSUIT")
@@ -2859,10 +2891,7 @@ class MappingDashboardWindow(QMainWindow):
                 # Option B: Input a template image and wrap it around a cube as a texture
                 geom_xml = "<box><size>0.12 0.12 0.12</size></box>"
 
-                # Unique timestamp filename to bust Ogre2 GPU texture cache
-                ts = int(time.time() * 1000)
-                tex_file = os.path.join(target_dir, f"target_texture_{ts}.png")
-                canonical_tex = os.path.join(target_dir, "target_texture.png")
+                tex_file = os.path.join(target_dir, "target_texture.png")
 
                 if effective_img and os.path.isfile(effective_img):
                     try:
@@ -2876,7 +2905,6 @@ class MappingDashboardWindow(QMainWindow):
                                 src_img, (new_w, new_h), interpolation=cv2.INTER_AREA
                             )
                             cv2.imwrite(tex_file, resized)
-                            cv2.imwrite(canonical_tex, resized)
                             has_texture = True
                     except Exception:
                         has_texture = False
@@ -3195,9 +3223,12 @@ class MappingDashboardWindow(QMainWindow):
         col = getattr(self, 'selected_target_color', QColor(225, 29, 72))
         prompt_text = f"{target_name} | {target_desc}" if target_desc else target_name
         if self.ros:
+            if hasattr(self.ros, 'publish_target_stopped'):
+                self.ros.publish_target_stopped(False)
             if hasattr(self.ros, 'publish_pursuit_mode'):
                 self.ros.publish_pursuit_mode("semantic")
-            self.ros.publish_target_prompt(prompt_text)
+            if hasattr(self.ros, 'publish_target_prompt'):
+                self.ros.publish_target_prompt(prompt_text)
         self.on_feedback_received(f"[Target Operator] Deployed 3D {shape} ({col.name()})")
         self.on_thinking_log_received(
             f"🎯 [Shape Deployed] 3D {shape} ({col.name()}) active for Option A "
@@ -3616,7 +3647,10 @@ class MappingDashboardWindow(QMainWindow):
             msg.is_bigendian = 0
             msg.step = img.shape[1] * 3
             msg.data = img.tobytes()
-            self.ros.publish_target_image(msg)
+            if hasattr(self.ros, 'publish_target_stopped'):
+                self.ros.publish_target_stopped(False)
+            if hasattr(self.ros, 'publish_target_image'):
+                self.ros.publish_target_image(msg)
             if hasattr(self.ros, 'publish_pursuit_mode'):
                 self.ros.publish_pursuit_mode('template')
 
@@ -3695,13 +3729,13 @@ class MappingDashboardWindow(QMainWindow):
         """Generate random arena coordinates avoiding obstacles, walls, and robot footprint."""
         import random
         for _ in range(300):
-            tx = random.uniform(-2.10, 2.10)
-            ty = random.uniform(-2.10, 2.10)
+            tx = round(random.uniform(-2.10, 2.10), 2)
+            ty = round(random.uniform(-2.10, 2.10), 2)
             if self.is_pose_colliding_with_geometries(tx, ty):
                 continue
             if math.hypot(tx - self.robot_x, ty - self.robot_y) < 0.70:
                 continue
-            return (round(float(tx), 2), round(float(ty), 2))
+            return (tx, ty)
         return (1.50, 0.00)
 
     def on_randomize_target_clicked(self):

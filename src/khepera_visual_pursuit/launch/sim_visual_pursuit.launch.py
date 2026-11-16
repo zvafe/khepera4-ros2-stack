@@ -24,7 +24,9 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 
-def _create_sim_launch_arguments(default_params: str) -> Tuple[DeclareLaunchArgument, ...]:
+def _create_sim_launch_arguments(
+    default_params: str, default_world: str
+) -> Tuple[DeclareLaunchArgument, ...]:
     """Declare launch arguments for simulated visual pursuit environment."""
     return (
         DeclareLaunchArgument("rviz", default_value="true", description="Launch RViz2"),
@@ -64,6 +66,11 @@ def _create_sim_launch_arguments(default_params: str) -> Tuple[DeclareLaunchArgu
             default_value="auto",
             description="Hardware device for perception models (auto, cuda:0, cpu)",
         ),
+        DeclareLaunchArgument(
+            "world",
+            default_value=default_world,
+            description="Path to world SDF file to load in Gazebo Harmonic",
+        ),
     )
 
 
@@ -80,6 +87,8 @@ def _create_sim_pursuit_actions(
             "rviz": LaunchConfiguration("rviz"),
             "auto_explore": LaunchConfiguration("auto_explore"),
             "headless": LaunchConfiguration("headless"),
+            "world": LaunchConfiguration("world"),
+            "cmd_vel_topic": "/explorer/cmd_vel",
         }.items(),
     )
 
@@ -101,12 +110,14 @@ def generate_launch_description() -> LaunchDescription:
     """Generate complete end-to-end simulation and visual pursuit description."""
     pkg_control = get_package_share_directory("khepera4_control")
     pkg_pursuit = get_package_share_directory("khepera_visual_pursuit")
+    pkg_desc = get_package_share_directory("khepera4_description")
 
     mapping_launch = os.path.join(pkg_control, "launch", "mapping.launch.py")
     pursuit_launch = os.path.join(pkg_pursuit, "launch", "perception_pipeline.launch.py")
     default_params = os.path.join(pkg_pursuit, "config", "perception_params.yaml")
+    default_world = os.path.join(pkg_desc, "worlds", "khepera4_exploration_world.sdf")
 
-    args = _create_sim_launch_arguments(default_params)
+    args = _create_sim_launch_arguments(default_params, default_world)
     includes = _create_sim_pursuit_actions(mapping_launch, pursuit_launch)
 
     return LaunchDescription(list(args) + list(includes))

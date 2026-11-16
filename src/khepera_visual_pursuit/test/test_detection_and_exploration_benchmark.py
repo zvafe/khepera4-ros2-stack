@@ -750,9 +750,10 @@ def test_option_b_temporal_persistence_and_coast() -> None:
         published_status = []
         node.status_pub.publish = lambda msg: published_status.append(msg.data)
 
-        # Run 1: target in sight -> target_locked becomes True
+        # Target in sight -> target_locked becomes True after confirmation
         node.latest_frame = frame
-        node._on_detection_timer()
+        for _ in range(node.MODE_B_CONFIRMATION_FRAMES):
+            node._on_detection_timer()
         assert node.target_locked is True
         assert published_status[-1] is True
 

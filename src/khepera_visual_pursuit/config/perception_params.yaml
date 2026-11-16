@@ -35,11 +35,11 @@ lightglue_tracker_node:
 
 ibvs_controller_node:
   ros__parameters:
-    auto_start: true
+    auto_start: false
     keypoints_topic: "/perception/target_keypoints"
     confidence_topic: "/perception/tracking_confidence"
     scan_topic: "/khepera4/scan"
-    cmd_vel_topic: "/cmd_vel"
+    cmd_vel_topic: "/pursuit/cmd_vel_raw"
     control_rate_hz: 20.0
     k_v: 0.4
     k_omega: 1.2
@@ -48,7 +48,7 @@ ibvs_controller_node:
     desired_area_fraction: 0.85
     min_confidence: 0.35
     reverse_sweep_omega: 0.2
-    obstacle_stop_distance: 0.15
+    obstacle_stop_distance: 0.05
     use_ultrasonic: true
     ultrasonic_topic_prefix: "/khepera4/us_"
     cooperate_with_explorer: true

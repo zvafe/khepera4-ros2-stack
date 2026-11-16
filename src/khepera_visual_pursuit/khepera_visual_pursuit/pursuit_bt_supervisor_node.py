@@ -213,7 +213,12 @@ class PursuitBTSupervisorNode(Node):
     def _on_pursuit_enable(self, msg: Bool) -> None:
         """Handle external pursuit enable/disable toggles."""
         self.pursuit_enabled = bool(msg.data)
-        if not self.pursuit_enabled and self.current_state == STATE_VISUAL_PURSUIT:
+        if self.pursuit_enabled:
+            self.target_docked_latched = False
+            self.terminal_stop_ticks = 0
+            self.last_target_seen_time = -100.0
+            self.explorer_enabled = True
+        elif self.current_state == STATE_VISUAL_PURSUIT:
             self.current_state = STATE_FRONTIER_EXPLORATION if self.explorer_enabled else STATE_IDLE
 
     def _on_explorer_enable(self, msg: Bool) -> None:
@@ -227,6 +232,10 @@ class PursuitBTSupervisorNode(Node):
         if msg.data:
             self.target_docked_latched = True
             self.current_state = STATE_TERMINAL_STOP
+        else:
+            self.target_docked_latched = False
+            self.terminal_stop_ticks = 0
+            self.explorer_enabled = True
 
     def _on_speed_limits(self, msg: Twist) -> None:
         """Update linear and angular speed ceilings from dashboard dials."""
@@ -260,7 +269,7 @@ class PursuitBTSupervisorNode(Node):
         # ----------------------------------------------------------------------
         if self.target_docked_latched:
             self.current_state = STATE_TERMINAL_STOP
-            self._halt_and_publish_stop()
+            self._publish_command(selected_cmd)
             self._publish_telemetry(selected_cmd, is_target_active)
             return
 
@@ -293,12 +302,8 @@ class PursuitBTSupervisorNode(Node):
         # ----------------------------------------------------------------------
         if self.pursuit_enabled and is_target_active:
             self.current_state = STATE_VISUAL_PURSUIT
-
-            # Suppress exploration layer while actively pursuing target
-            if self.explorer_enabled:
-                self.explorer_enable_pub.publish(Bool(data=False))
-
             selected_cmd = self.latest_pursuit_cmd
+            self.explorer_enable_pub.publish(Bool(data=False))
             self._publish_command(selected_cmd)
             self._publish_telemetry(selected_cmd, is_target_active)
             return
@@ -317,7 +322,7 @@ class PursuitBTSupervisorNode(Node):
         # ----------------------------------------------------------------------
         # Branch 4: Frontier Exploration (No Target Visible)
         # ----------------------------------------------------------------------
-        if self.explorer_enabled:
+        if self.explorer_enabled or self.pursuit_enabled:
             self.current_state = STATE_FRONTIER_EXPLORATION
             selected_cmd = self.latest_explorer_cmd
             self._publish_command(selected_cmd)

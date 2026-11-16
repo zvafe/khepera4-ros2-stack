@@ -367,7 +367,7 @@ class ReactiveExplorer(Node):
         return SetParametersResult(successful=True)
 
     def target_stopped_callback(self, msg: Bool) -> None:
-        """Halt exploration permanently when target is reached and stopped."""
+        """Halt or reset exploration on target reached and stopped signal."""
         if msg.data:
             self.target_stopped = True
             self.get_logger().info(
@@ -380,14 +380,17 @@ class ReactiveExplorer(Node):
             self._stop_robot()
         else:
             self.target_stopped = False
+            self.get_logger().info('Terminal stop reset on /target_found_and_stopped.')
 
     def pursuit_enable_callback(self, msg: Bool) -> None:
         """Handle pursuit active toggles to enable or suspend active exploration."""
         was_active = self.pursuit_active
         self.pursuit_active = bool(msg.data)
-        if self.pursuit_active and not was_active:
-            if not self.target_stopped:
+        if self.pursuit_active:
+            self.target_stopped = False
+            if not was_active:
                 self.target_in_sight = False
+                self.target_lost_time = None
                 self.get_logger().info(
                     'Visual pursuit enabled. Starting 360° survey and active exploration search.'
                 )
@@ -410,7 +413,7 @@ class ReactiveExplorer(Node):
                     'Visual pursuit disengaged. Halting autonomous exploration.'
                 )
                 self.publish_thought('🛑 Pursuit disengaged. Halting exploration.')
-            self._set_enabled(False, 'topic /pursuit/enable')
+                self._set_enabled(False, 'topic /pursuit/enable')
             self._stop_robot()
 
     def target_status_callback(self, msg: Bool) -> None:
@@ -433,10 +436,11 @@ class ReactiveExplorer(Node):
             now = self._get_current_time()
             if self.target_lost_time is None:
                 self.target_lost_time = now
-            if (
-                self.target_lost_timeout <= 0.0
-                or (now - self.target_lost_time) >= self.target_lost_timeout
-            ):
+            lost_duration = now - self.target_lost_time
+            timeout = (
+                0.0 if self.target_lost_timeout <= 0.0 else min(1.2, self.target_lost_timeout)
+            )
+            if self.target_lost_timeout <= 0.0 or lost_duration >= timeout:
                 if self.target_in_sight:
                     self.target_in_sight = False
                     self.get_logger().info(

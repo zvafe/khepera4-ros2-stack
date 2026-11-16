@@ -54,6 +54,7 @@ DEFAULT_STATUS_TOPIC = "/perception/target_status"
 DEFAULT_VISUAL_TOPIC = "/target/detection_visual"
 DEFAULT_THINKING_TOPIC = "/robot/thinking_log"
 DEFAULT_STOP_TOPIC = "/target_found_and_stopped"
+DEFAULT_PURSUIT_ENABLE_TOPIC = "/pursuit/enable"
 DEFAULT_DETECTION_RATE_HZ = 10.0
 DEFAULT_TAU_VERIFY = 0.55
 DEFAULT_TAU_MARGIN = 0.025
@@ -176,6 +177,9 @@ class ObjectDetectorVerifierNode(Node):
         self.stop_sub = self.create_subscription(
             Bool, DEFAULT_STOP_TOPIC, self._on_target_found_and_stopped, 10
         )
+        self.pursuit_enable_sub = self.create_subscription(
+            Bool, DEFAULT_PURSUIT_ENABLE_TOPIC, self._on_pursuit_enable_message, 10
+        )
         self.is_halted: bool = False
         self._last_thought_text = ""
         self._last_thought_time = 0.0
@@ -212,7 +216,7 @@ class ObjectDetectorVerifierNode(Node):
             self.detector.set_classes(GENERIC_OBJECT_CLASSES)
 
     def _on_target_found_and_stopped(self, msg: Bool) -> None:
-        """Halt object detector inference when target is reached and stopped."""
+        """Halt or un-halt object detector inference on terminal stop signal."""
         if msg.data:
             self.is_halted = True
             self.confirmation_buffer.clear()
@@ -221,6 +225,24 @@ class ObjectDetectorVerifierNode(Node):
             self.get_logger().info("Target reached and stopped. Halting object detector node.")
         else:
             self.is_halted = False
+            self.target_locked = False
+            self.last_verified_box = None
+            self.missed_detection_count = 0
+            self.confirmation_buffer.clear()
+            self.mode_b_confirmation_buffer.clear()
+            self.get_logger().info("Terminal stop cleared. Detector inference resumed.")
+
+    def _on_pursuit_enable_message(self, msg: Bool) -> None:
+        """Handle pursuit enable toggles to un-halt inference and reset lock state."""
+        if msg.data:
+            self.is_halted = False
+            self.target_locked = False
+            self.last_verified_box = None
+            self.missed_detection_count = 0
+            self.confirmation_buffer.clear()
+            self.mode_b_confirmation_buffer.clear()
+            self.last_target_sim_time = 0.0
+            self.get_logger().info("Visual pursuit re-enabled: detector un-halted for search.")
 
     def _on_pursuit_mode_message(self, msg: String) -> None:
         """Switch operational pursuit mode between Mode A (semantic) and Mode B (template)."""
@@ -443,8 +465,9 @@ class ObjectDetectorVerifierNode(Node):
                     self.status_pub.publish(Bool(data=True))
                     self._publish_detection_visual(self.last_verified_box, decayed_sim)
                     thought = (
-                        f"⏳ [Mode B Persistence] Holding target lock ({self.missed_detection_count}/"
-                        f"{self.max_coast_frames} frames) -> Sim={decayed_sim:.2f}"
+                        f"⏳ [Mode B Persistence] Holding target lock "
+                        f"({self.missed_detection_count}/{self.max_coast_frames} frames) "
+                        f"-> Sim={decayed_sim:.2f}"
                     )
                     self._publish_thought(thought)
                 else:
@@ -493,14 +516,16 @@ class ObjectDetectorVerifierNode(Node):
                         self.status_pub.publish(Bool(data=True))
                         self._publish_detection_visual(best_box, verif.best_similarity)
                         thought = (
-                            f"🎯 [Mode B] Target Confirmed by DINOv2! Sim={verif.best_similarity:.2f} "
-                            f"(margin={verif.margin:.2f}) -> Visual Servoing active"
+                            f"🎯 [Mode B] Target Confirmed by DINOv2! "
+                            f"Sim={verif.best_similarity:.2f} (margin={verif.margin:.2f}) "
+                            f"-> Visual Servoing active"
                         )
                         self._publish_thought(thought)
                     else:
                         thought = (
                             f"🔍 [Mode B] Target candidate verifying "
-                            f"({len(self.mode_b_confirmation_buffer)}/{self.MODE_B_CONFIRMATION_FRAMES} frames) "
+                            f"({len(self.mode_b_confirmation_buffer)}/"
+                            f"{self.MODE_B_CONFIRMATION_FRAMES} frames) "
                             f"-> Sim={verif.best_similarity:.2f}"
                         )
                         self._publish_thought(thought)
@@ -668,7 +693,8 @@ class ObjectDetectorVerifierNode(Node):
                         self.target_embedding = self.target_embedding / norm
             elif (now - self.last_target_sim_time) > self.LOCK_TIMEOUT_SECONDS:
                 self._unlock_mode_a(
-                    f"Target similarity ({sim:.2f}) dropped below threshold for > {self.LOCK_TIMEOUT_SECONDS}s"
+                    f"Target similarity ({sim:.2f}) dropped below threshold "
+                    f"for > {self.LOCK_TIMEOUT_SECONDS}s"
                 )
                 self._publish_empty_results()
                 return

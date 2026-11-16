@@ -223,7 +223,8 @@ To resolve the identified bottlenecks, targeted calibrations were applied across
 3. **Standardized Control & Latching Interfaces**: The arbitration topic `/target_found_and_stopped` alongside `/pursuit/enable` and `/khepera4/scan` provides deterministic handoff guarantees.
 4. **Supervisory Ground-Truth Audit Harness**: The `mic_probe_node` architecture provides an objective, automated gatekeeper for tracking regressions and measuring empirical performance.
 
-### Quadrant 4: WHAT NEEDS TO BE REDONE
-1. **Map-Referenced Raycasting for Line-of-Sight Occlusion**: Transition `mic_probe.py` from 2D LiDAR scan culling to 2D/3D raycasting against the known static occupancy grid (`/map` or SDF geometry), completely eliminating occlusion edge cases when objects are behind walls beyond laser range.
-2. **Centralized Behavior Tree Supervisor**: Replace decentralized topic-flipping handoffs between `reactive_explorer` and `ibvs_controller_node` with a centralized Nav2 Behavior Tree or Finite State Machine to govern exploration, visual acquisition, pursuit, and docking.
-3. **Dynamic Model Ground-Truth Synchronization**: Deploy a direct Gazebo transport bridge querying `gz.msgs.Pose_V` for dynamic model pose streaming, ensuring that supervisory evaluations are perfectly synchronized with simulation ground truth.
+### Quadrant 4: WHAT WAS REDONE & VALIDATED (CURRENT STATUS)
+1. **Map-Referenced Raycasting for Line-of-Sight Occlusion (COMPLETED)**: Integrated `MapRaycaster` from `khepera4_control.map_raycaster` directly into `mic_probe.py`, using Bresenham 2D occupancy grid raycasting with dynamic target extent clearance (`target_radius = max(0.12, max(lx, ly)/2 + 0.02)`), resolving false occlusion on target bounding boxes and wall culling.
+2. **Centralized Behavior Tree Supervisor (COMPLETED)**: Deployed `PursuitBTSupervisorNode` running at 20 Hz as the sole authoritative arbiter of `/cmd_vel`. It coordinates state transitions between `FRONTIER_EXPLORATION`, `VISUAL_PURSUIT`, `TARGET_RECOVERY`, and `TERMINAL_STOP`, suppressing decentralized node collisions.
+3. **Multi-Burst DDS Handshake Protocol (COMPLETED)**: Replaced single-shot CLI publications (`--once`) with 10 Hz repeated bursts (`-t 5 -r 10`) in `trial_runner.py`, eliminating ROS 2 DDS discovery drops.
+4. **Terminal Standoff Calibration (COMPLETED)**: Aligned `obstacle_stop_distance: 0.05` across `perception_params.yaml` and IBVS gains, enabling verified terminal docking at target with clean latching.

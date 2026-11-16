@@ -25,6 +25,7 @@ import numpy as np
 
 from khepera_visual_pursuit.image_converter import imgmsg_to_cv2
 from khepera_visual_pursuit.ros_compat import (
+    Bool,
     Detection2D,
     Detection2DArray,
     ExternalShutdownException,
@@ -48,6 +49,8 @@ DEFAULT_IMAGE_TOPIC = "/camera/image_raw"
 DEFAULT_TARGET_IMAGE_TOPIC = "/pursuit/target_image"
 DEFAULT_TARGET_PROMPT_TOPIC = "/pursuit/target_prompt"
 DEFAULT_PURSUIT_MODE_TOPIC = "/pursuit/mode"
+DEFAULT_PURSUIT_ENABLE_TOPIC = "/pursuit/enable"
+DEFAULT_STOP_TOPIC = "/target_found_and_stopped"
 DEFAULT_ROIS_TOPIC = "/perception/candidate_rois"
 DEFAULT_KEYPOINTS_TOPIC = "/perception/target_keypoints"
 DEFAULT_CONFIDENCE_TOPIC = "/perception/tracking_confidence"
@@ -115,6 +118,12 @@ class LightGlueTrackerNode(Node):
         self.rois_sub = self.create_subscription(
             Detection2DArray, rois_topic, self._on_candidate_rois, 10
         )
+        self.pursuit_enable_sub = self.create_subscription(
+            Bool, DEFAULT_PURSUIT_ENABLE_TOPIC, self._on_pursuit_enable, 10
+        )
+        self.stop_sub = self.create_subscription(
+            Bool, DEFAULT_STOP_TOPIC, self._on_stop_signal, 10
+        )
 
         self.keypoints_pub = self.create_publisher(PolygonStamped, keypoints_topic, 10)
         self.confidence_pub = self.create_publisher(Float32, confidence_topic, 10)
@@ -134,11 +143,48 @@ class LightGlueTrackerNode(Node):
                     self.has_target_lock = True
                     self.get_logger().info(f"Loaded target reference image from {path}")
 
+    def _on_pursuit_enable(self, msg: Bool) -> None:
+        """Handle pursuit active toggles to reset or prime tracking lock."""
+        if msg.data:
+            self._last_confidence = 0.0
+            self.latest_verified_roi = None
+            self.latest_roi_time = 0.0
+            if self.pursuit_mode != "template" or not self.tracker.has_reference:
+                self.has_target_lock = False
+            self.tracker.reset()
+            self.get_logger().info("Visual pursuit re-enabled: cleared tracker state for search.")
+        else:
+            self.has_target_lock = False
+            self.latest_verified_roi = None
+            self.latest_roi_time = 0.0
+            self.tracker.reset()
+
+    def _on_stop_signal(self, msg: Bool) -> None:
+        """Handle terminal stop notification to freeze or un-halt tracking."""
+        if msg.data:
+            self.has_target_lock = False
+            self._last_confidence = 0.0
+            self.latest_verified_roi = None
+            self.latest_roi_time = 0.0
+            self.tracker.reset()
+        else:
+            self._last_confidence = 0.0
+            if self.pursuit_mode == "template" and self.tracker.has_reference:
+                self.has_target_lock = True
+            else:
+                self.has_target_lock = False
+
     def _on_pursuit_mode(self, msg: String) -> None:
         """Update tracker operational pursuit mode."""
         mode = str(msg.data).strip().lower()
         if mode in ("template", "image", "mode_b", "mode b"):
             self.pursuit_mode = "template"
+            if self.tracker.has_reference:
+                self.has_target_lock = True
+            else:
+                self.has_target_lock = False
+            self.latest_verified_roi = None
+            self.latest_roi_time = 0.0
             self.get_logger().info("Tracker mode set to Mode B: Reference Image Template.")
         elif mode in ("semantic", "text", "mode_a", "mode a"):
             self.pursuit_mode = "semantic"
@@ -149,7 +195,7 @@ class LightGlueTrackerNode(Node):
             self.get_logger().info("Tracker mode set to Mode A: Semantic Description.")
 
     def _on_target_image(self, msg: Image) -> None:
-        """Lock tracker reference template directly from target image message."""
+        """Register reference template from incoming message and prime lock."""
         target_bgr = imgmsg_to_cv2(msg)
         if target_bgr is None or target_bgr.size == 0:
             return
@@ -157,7 +203,11 @@ class LightGlueTrackerNode(Node):
         if success:
             self.pursuit_mode = "template"
             self.has_target_lock = True
-            self.get_logger().info("Target tracker reference lock established from target image.")
+            self.latest_verified_roi = None
+            self.latest_roi_time = 0.0
+            self.get_logger().info(
+                "Target tracker template registered in Mode B (ready for verification)."
+            )
 
     def _on_target_prompt(self, msg: String) -> None:
         """Reset tracker state when new semantic prompt is received (only in Mode A)."""
@@ -196,8 +246,14 @@ class LightGlueTrackerNode(Node):
         else:
             self.latest_roi_time = float(time.time())
 
-        # In Mode B (template), the reference template is immutable ground-truth
-        if self.pursuit_mode == "template" and self.has_target_lock:
+        # In Mode B (template), engage lock once DINOv2 confirms candidate ROI
+        if self.pursuit_mode == "template":
+            score = (
+                float(best_detection.results[0].hypothesis.score)
+                if best_detection.results else 0.0
+            )
+            if score >= 0.60:
+                self.has_target_lock = True
             return
 
         if self.has_target_lock and self._last_confidence >= 0.30:
@@ -328,6 +384,9 @@ class LightGlueTrackerNode(Node):
                 self.keypoints_pub.publish(poly_msg)
                 self.confidence_pub.publish(Float32(data=score))
                 return
+
+        if self.has_target_lock and (now - self.latest_roi_time) > 2.5:
+            self.has_target_lock = False
 
         self._last_confidence = 0.0
         self.confidence_pub.publish(Float32(data=0.0))

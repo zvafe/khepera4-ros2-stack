@@ -573,7 +573,8 @@ class SuperPointLightGlueTracker:
                 best_loc = max_loc
                 best_size = (sw, sh)
 
-        if best_val < 0.40:
+        # High threshold (0.65) prevents spurious correlations against background clutter
+        if best_val < 0.65:
             return self._build_empty_output()
 
         sw, sh = best_size

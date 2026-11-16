@@ -235,14 +235,6 @@ except ImportError:
             """Return current simulated time."""
             return Time(sec=0, nanosec=0)
 
-    class Parameter:
-        """Stand-in for rclpy.parameter.Parameter."""
-
-        def __init__(self, name: str, value: Any) -> None:
-            """Initialize Parameter."""
-            self.name = name
-            self.value = value
-
     class Publisher:
         """Stand-in for rclpy Publisher."""
 

@@ -255,7 +255,7 @@ class IBVSControllerNode(Node):
         """Reset terminal stop state when False is received on stop topic."""
         if not msg.data:
             self.target_reached_and_stopped = False
-            self.pursuit_enabled = True
+            self.has_active_target = False
 
     def _on_pursuit_enable(self, msg: Bool) -> None:
         """Dynamically toggle pursuit control loop execution."""
@@ -263,6 +263,7 @@ class IBVSControllerNode(Node):
         self.get_logger().info(f"Pursuit enable set to: {self.pursuit_enabled}")
         if self.pursuit_enabled:
             self.target_reached_and_stopped = False
+            self.has_active_target = False
         else:
             self.has_active_target = False
             self.controller.reset()
@@ -280,10 +281,7 @@ class IBVSControllerNode(Node):
         self.latest_norm_x = norm_x
         self.latest_norm_y = norm_y
         self.latest_area_frac = area_frac
-        was_active = self.has_active_target
         self.has_active_target = True
-        if not was_active and self.cooperate_with_explorer:
-            self.explorer_enable_pub.publish(Bool(data=False))
 
     def _calculate_centroid_and_area(
         self,
