@@ -347,6 +347,11 @@ class SuperPointLightGlueTracker:
         self._ref_template_bgr: Optional[np.ndarray] = None
         self.has_reference: bool = False
 
+    def reset_tracking(self) -> None:
+        """Reset temporal Kalman filter and confidence without clearing reference template."""
+        self._last_confidence = 0.0
+        self.kalman.reset()
+
     def reset(self) -> None:
         """Clear reference template and reset tracking state."""
         self._ref_sp_feats = None

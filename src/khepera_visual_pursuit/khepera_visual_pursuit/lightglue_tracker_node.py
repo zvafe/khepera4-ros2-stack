@@ -149,15 +149,21 @@ class LightGlueTrackerNode(Node):
             self._last_confidence = 0.0
             self.latest_verified_roi = None
             self.latest_roi_time = 0.0
-            if self.pursuit_mode != "template" or not self.tracker.has_reference:
+            if self.pursuit_mode == "template" and self.tracker.has_reference:
+                self.has_target_lock = True
+                self.tracker.reset_tracking()
+            else:
                 self.has_target_lock = False
-            self.tracker.reset()
-            self.get_logger().info("Visual pursuit re-enabled: cleared tracker state for search.")
+                self.tracker.reset()
+            self.get_logger().info("Visual pursuit re-enabled: primed tracker state for search.")
         else:
             self.has_target_lock = False
             self.latest_verified_roi = None
             self.latest_roi_time = 0.0
-            self.tracker.reset()
+            if self.pursuit_mode == "template" and self.tracker.has_reference:
+                self.tracker.reset_tracking()
+            else:
+                self.tracker.reset()
 
     def _on_stop_signal(self, msg: Bool) -> None:
         """Handle terminal stop notification to freeze or un-halt tracking."""
@@ -166,11 +172,15 @@ class LightGlueTrackerNode(Node):
             self._last_confidence = 0.0
             self.latest_verified_roi = None
             self.latest_roi_time = 0.0
-            self.tracker.reset()
+            if self.pursuit_mode == "template" and self.tracker.has_reference:
+                self.tracker.reset_tracking()
+            else:
+                self.tracker.reset()
         else:
             self._last_confidence = 0.0
             if self.pursuit_mode == "template" and self.tracker.has_reference:
                 self.has_target_lock = True
+                self.tracker.reset_tracking()
             else:
                 self.has_target_lock = False
 

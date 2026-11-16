@@ -218,8 +218,11 @@ class PursuitBTSupervisorNode(Node):
             self.terminal_stop_ticks = 0
             self.last_target_seen_time = -100.0
             self.explorer_enabled = True
-        elif self.current_state == STATE_VISUAL_PURSUIT:
-            self.current_state = STATE_FRONTIER_EXPLORATION if self.explorer_enabled else STATE_IDLE
+        else:
+            if self.explorer_enabled:
+                self.current_state = STATE_FRONTIER_EXPLORATION
+            else:
+                self.current_state = STATE_IDLE
 
     def _on_explorer_enable(self, msg: Bool) -> None:
         """Handle external exploration enable/disable toggles."""
@@ -235,7 +238,6 @@ class PursuitBTSupervisorNode(Node):
         else:
             self.target_docked_latched = False
             self.terminal_stop_ticks = 0
-            self.explorer_enabled = True
 
     def _on_speed_limits(self, msg: Twist) -> None:
         """Update linear and angular speed ceilings from dashboard dials."""

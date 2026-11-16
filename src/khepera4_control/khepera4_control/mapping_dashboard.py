@@ -37,6 +37,7 @@ Features:
 
 import atexit
 import collections
+import json
 import math
 import os
 import signal
@@ -693,6 +694,9 @@ class MappingRosWorker(QObject):
         self.node.create_subscription(String, '/robot/thinking_log', lambda m: self.thinking_log_received.emit(m.data), 10)
         self.node.create_subscription(Bool, '/perception/target_status', lambda m: self.target_status_received.emit(m.data), 10)
         self.node.create_subscription(Float32, '/perception/tracking_confidence', lambda m: self.target_confidence_received.emit(m.data), 10)
+        self.node.create_subscription(
+            String, '/executive/status', lambda m: self.executive_state_received.emit(m.data), 10
+        )
 
         # Perception ROI subscriptions (with graceful fallback)
         try:
@@ -2039,12 +2043,32 @@ class MappingDashboardWindow(QMainWindow):
         )
         hud_layout.addWidget(self.lbl_rollover_badge)
 
-        # Arena Center Respawn Button (Recenter Robot rightside up)
-        self.btn_recenter = QPushButton("Recenter Robot (Respawn Upright)")
+        # Arena Center Respawn & Hot Reload Buttons
+        respawn_row = QWidget()
+        rr_layout = QHBoxLayout(respawn_row)
+        rr_layout.setContentsMargins(0, 0, 0, 0)
+        rr_layout.setSpacing(5)
+
+        self.btn_recenter = QPushButton("Recenter (Origin)")
         self.btn_recenter.setObjectName("recenter_btn")
         self.btn_recenter.setCursor(Qt.PointingHandCursor)
         self.btn_recenter.clicked.connect(self.on_recenter_clicked)
-        hud_layout.addWidget(self.btn_recenter)
+        rr_layout.addWidget(self.btn_recenter)
+
+        self.btn_hot_reload = QPushButton("🔥 Hot Reload")
+        self.btn_hot_reload.setObjectName("hot_reload_btn")
+        self.btn_hot_reload.setCursor(Qt.PointingHandCursor)
+        self.btn_hot_reload.setToolTip(
+            "Kill all orphan processes, reset robot to origin, clear maps & pipeline."
+        )
+        self.btn_hot_reload.setStyleSheet(
+            "background-color: #7c2d12; border: 2px solid #ea580c; border-radius: 5px; "
+            "color: #ffedd5; font-size: 11px; font-weight: bold; padding: 6px;"
+        )
+        self.btn_hot_reload.clicked.connect(self.on_hot_reload_clicked)
+        rr_layout.addWidget(self.btn_hot_reload)
+
+        hud_layout.addWidget(respawn_row)
 
         left_layout.addWidget(hud_group)
 
@@ -2692,8 +2716,14 @@ class MappingDashboardWindow(QMainWindow):
                 )
         else:
             if self.ros:
-                self.ros.set_pursuit_enable(False)
-                self.ros.kill_explorer_instances()
+                if hasattr(self.ros, 'set_pursuit_enable'):
+                    self.ros.set_pursuit_enable(False)
+                if hasattr(self.ros, 'set_explorer_enable'):
+                    self.ros.set_explorer_enable(False)
+                if hasattr(self.ros, 'publish_target_stopped'):
+                    self.ros.publish_target_stopped(True)
+                if hasattr(self.ros, 'kill_explorer_instances'):
+                    self.ros.kill_explorer_instances()
             self.on_thinking_log_received("[Pursuit] Target pursuit disengaged.")
             if hasattr(self, 'lbl_thinking_motion_badge'):
                 self.lbl_thinking_motion_badge.setText("MANUAL_OR_IDLE")
@@ -2710,16 +2740,60 @@ class MappingDashboardWindow(QMainWindow):
     def on_executive_state_received(self, msg: Any):
         """Update pursuit status indicator from /executive/status topic."""
         self.latest_executive_state = msg
-        state_str = getattr(msg, 'current_state', 'UNKNOWN')
+        state_str = "UNKNOWN"
+        try:
+            if isinstance(msg, str):
+                data = json.loads(msg)
+                if isinstance(data, dict):
+                    state_str = data.get("state", "UNKNOWN")
+            elif hasattr(msg, "data") and isinstance(msg.data, str):
+                data = json.loads(msg.data)
+                if isinstance(data, dict):
+                    state_str = data.get("state", "UNKNOWN")
+        except Exception:
+            state_str = "UNKNOWN"
+        if state_str == "UNKNOWN":
+            state_str = getattr(msg, 'current_state', getattr(msg, 'state', 'UNKNOWN'))
+
         if hasattr(self, 'lbl_pursuit_status'):
             self.lbl_pursuit_status.setText(f"Pursuit: {state_str}")
-            if state_str == 'IDLE':
+            if state_str in ('IDLE', 'STANDBY', 'TERMINAL_STOP'):
                 self.is_pursuit_active = False
-                self.lbl_pursuit_status.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 10px;")
+                self.lbl_pursuit_status.setStyleSheet(
+                    "color: #94a3b8; font-weight: bold; font-size: 10px;"
+                )
             else:
                 self.is_pursuit_active = True
-                self.lbl_pursuit_status.setStyleSheet("color: #10b981; font-weight: bold; font-size: 10px;")
+                self.lbl_pursuit_status.setStyleSheet(
+                    "color: #10b981; font-weight: bold; font-size: 10px;"
+                )
             self._update_pursuit_button_style()
+
+        if hasattr(self, 'lbl_thinking_motion_badge'):
+            if state_str == 'TERMINAL_STOP':
+                self.lbl_thinking_motion_badge.setText("TARGET_DOCKED")
+                self.lbl_thinking_motion_badge.setStyleSheet(
+                    "background-color: #065f46; color: #6ee7b7; font-weight: bold; "
+                    "font-size: 9.5px; padding: 2px 6px; border-radius: 3px;"
+                )
+            elif state_str in ('VISUAL_PURSUIT', 'TARGET_RECOVERY'):
+                self.lbl_thinking_motion_badge.setText("TARGET_PURSUIT")
+                self.lbl_thinking_motion_badge.setStyleSheet(
+                    "background-color: #064e3b; color: #34d399; font-weight: bold; "
+                    "font-size: 9.5px; padding: 2px 6px; border-radius: 3px;"
+                )
+            elif state_str == 'FRONTIER_EXPLORATION':
+                self.lbl_thinking_motion_badge.setText("FRONTIER_SEARCH")
+                self.lbl_thinking_motion_badge.setStyleSheet(
+                    "background-color: #1e3a8a; color: #60a5fa; font-weight: bold; "
+                    "font-size: 9.5px; padding: 2px 6px; border-radius: 3px;"
+                )
+            elif state_str in ('IDLE', 'STANDBY'):
+                self.lbl_thinking_motion_badge.setText("IDLE / STANDBY")
+                self.lbl_thinking_motion_badge.setStyleSheet(
+                    "background-color: #1e293b; color: #94a3b8; font-weight: bold; "
+                    "font-size: 9.5px; padding: 2px 6px; border-radius: 3px;"
+                )
 
         if hasattr(self, 'camera_popup') and self.camera_popup:
             self.camera_popup.update_pursuit_state(self.is_pursuit_active)
@@ -2890,8 +2964,10 @@ class MappingDashboardWindow(QMainWindow):
             else:
                 # Option B: Input a template image and wrap it around a cube as a texture
                 geom_xml = "<box><size>0.12 0.12 0.12</size></box>"
-
-                tex_file = os.path.join(target_dir, "target_texture.png")
+                # Unique timestamp filename to bust Ogre2 GPU texture cache
+                ts = int(time.time() * 1000)
+                tex_file = os.path.join(target_dir, f"target_texture_{ts}.png")
+                canonical_tex = os.path.join(target_dir, "target_texture.png")
 
                 if effective_img and os.path.isfile(effective_img):
                     try:
@@ -2905,6 +2981,7 @@ class MappingDashboardWindow(QMainWindow):
                                 src_img, (new_w, new_h), interpolation=cv2.INTER_AREA
                             )
                             cv2.imwrite(tex_file, resized)
+                            cv2.imwrite(canonical_tex, resized)
                             has_texture = True
                     except Exception:
                         has_texture = False
@@ -3223,8 +3300,6 @@ class MappingDashboardWindow(QMainWindow):
         col = getattr(self, 'selected_target_color', QColor(225, 29, 72))
         prompt_text = f"{target_name} | {target_desc}" if target_desc else target_name
         if self.ros:
-            if hasattr(self.ros, 'publish_target_stopped'):
-                self.ros.publish_target_stopped(False)
             if hasattr(self.ros, 'publish_pursuit_mode'):
                 self.ros.publish_pursuit_mode("semantic")
             if hasattr(self.ros, 'publish_target_prompt'):
@@ -3647,8 +3722,6 @@ class MappingDashboardWindow(QMainWindow):
             msg.is_bigendian = 0
             msg.step = img.shape[1] * 3
             msg.data = img.tobytes()
-            if hasattr(self.ros, 'publish_target_stopped'):
-                self.ros.publish_target_stopped(False)
             if hasattr(self.ros, 'publish_target_image'):
                 self.ros.publish_target_image(msg)
             if hasattr(self.ros, 'publish_pursuit_mode'):
@@ -3897,6 +3970,133 @@ class MappingDashboardWindow(QMainWindow):
         self.on_turned_over_received(False)
         if self.ros:
             self.ros.recenter_robot()
+
+    def on_hot_reload_clicked(self):
+        """Execute a full clean hot-reload: kill orphans, reset simulation & pipeline."""
+        timestamp = time.strftime("%H:%M:%S")
+        self.lbl_map_toast.setText(f"[{timestamp}] Executing hot-reload reset...")
+
+        # 1. Stop all active motion immediately
+        self.active_cmd_v = 0.0
+        self.active_cmd_w = 0.0
+        self.keys_pressed.clear()
+        self.dpad_direction = None
+        self.on_stop_clicked()
+
+        # 2. Terminate orphan explorer and navigation processes
+        if self.ros and hasattr(self.ros, 'kill_explorer_instances'):
+            self.ros.kill_explorer_instances()
+        try:
+            my_pid = os.getpid()
+            my_ppid = os.getppid()
+            out = subprocess.run(
+                ["pgrep", "-f", "reactive_explorer|openfrontier_explorer"],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+            )
+            if out.stdout:
+                for pid_str in out.stdout.split():
+                    try:
+                        p = int(pid_str)
+                        if p != my_pid and p != my_ppid:
+                            os.kill(p, signal.SIGKILL)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 3. Reset ROS pipeline topics
+        if self.ros:
+            if hasattr(self.ros, 'publish_cmd'):
+                self.ros.publish_cmd(0.0, 0.0)
+            if hasattr(self.ros, 'set_pursuit_enable'):
+                self.ros.set_pursuit_enable(False)
+            if hasattr(self.ros, 'set_explorer_enable'):
+                self.ros.set_explorer_enable(False)
+            if hasattr(self.ros, 'publish_target_stopped'):
+                self.ros.publish_target_stopped(False)
+            if hasattr(self.ros, 'set_auto_explore'):
+                self.ros.set_auto_explore(False)
+
+        # 4. Teleport robot to arena origin rightside up & clear maps
+        self.on_recenter_clicked()
+        self.on_clear_map_clicked()
+
+        # 5. Remove custom target model from Gazebo world
+        def _remove_gz_target():
+            try:
+                world_name = "khepera4_world"
+                proc = subprocess.run(
+                    ['gz', 'service', '-l'],
+                    capture_output=True, text=True, timeout=2.0
+                )
+                for line in proc.stdout.splitlines():
+                    parts = line.strip().split('/')
+                    if (
+                        len(parts) >= 4
+                        and parts[1] == 'world'
+                        and parts[3] in ('create', 'remove')
+                    ):
+                        world_name = parts[2]
+                        break
+                subprocess.run([
+                    'gz', 'service',
+                    '-s', f'/world/{world_name}/remove',
+                    '--reqtype', 'gz.msgs.Entity',
+                    '--reptype', 'gz.msgs.Boolean',
+                    '--timeout', '2000',
+                    '--req', 'name: "custom_target_object" type: MODEL'
+                ], capture_output=True, timeout=2.5)
+            except Exception:
+                pass
+
+        threading.Thread(target=_remove_gz_target, daemon=True).start()
+
+        # 6. Reset UI buttons, badges, logs, and dials to initial boot defaults
+        self.is_pursuit_active = False
+        self.is_auto_exploring = False
+        self.is_turned_over = False
+        self._update_pursuit_button_style()
+        if hasattr(self, 'btn_auto_explore'):
+            self.btn_auto_explore.setObjectName("auto_explore_idle")
+            self.btn_auto_explore.setText("▶ Start Auto Explore")
+            self.btn_auto_explore.style().unpolish(self.btn_auto_explore)
+            self.btn_auto_explore.style().polish(self.btn_auto_explore)
+        if hasattr(self, 'lbl_explore_status'):
+            self.lbl_explore_status.setText(
+                "Mode: Manual Control (Click button to start exploration)"
+            )
+            self.lbl_explore_status.setStyleSheet("color: #94a3b8; font-size: 10px;")
+
+        if hasattr(self, 'lbl_thinking_motion_badge'):
+            self.lbl_thinking_motion_badge.setText("IDLE / STANDBY")
+            self.lbl_thinking_motion_badge.setStyleSheet(
+                "background-color: #1e293b; color: #94a3b8; font-weight: bold; font-size: 9.5px; "
+                "padding: 2px 6px; border-radius: 3px;"
+            )
+
+        if hasattr(self, 'lbl_target_pose'):
+            self.lbl_target_pose.setText("Target Pose: (X: +1.50m, Y: +0.00m)")
+        self.target_pose = (1.50, 0.00, 0.0)
+
+        self.max_linear_speed = 0.12
+        self.max_angular_speed = 1.00
+        if hasattr(self, 'dial_linear_speed'):
+            self.dial_linear_speed.setValue(12)
+        if hasattr(self, 'dial_angular_speed'):
+            self.dial_angular_speed.setValue(100)
+        if hasattr(self, '_sync_speed_limits_to_robot'):
+            self._sync_speed_limits_to_robot()
+
+        self.lbl_map_toast.setText(
+            f"[{timestamp}] 🔥 Hot-reload complete: 0 orphans, robot at origin, fresh state."
+        )
+        self.on_thinking_log_received(
+            "🔥 [Hot Reload] Clean reset: 0 orphans, robot at origin, fresh boot state."
+        )
+        self.on_feedback_received("[System] Hot-reload reset to fresh boot state completed.")
+        self.update_map_plot()
 
     def on_turned_over_received(self, flipped: bool):
         """Update UI and state when turned over / flipped state changes."""

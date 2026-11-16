@@ -278,6 +278,7 @@ class ObjectDetectorVerifierNode(Node):
             self.target_template_bgr = target_bgr.copy()
             self.target_embedding = self.verifier.extract_embedding(target_bgr)
             self.is_template_locked = True
+            self.is_halted = False
             self.target_locked = False
             self.last_verified_box = None
             self.missed_detection_count = 0
